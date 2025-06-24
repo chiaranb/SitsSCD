@@ -33,7 +33,7 @@ def wandb_init(cfg):
     return wandb_id
 
 
-def load_model(cfg, dict_config, wandb_id, callbacks):
+''' def load_model(cfg, dict_config, wandb_id, callbacks):
     directory = cfg.checkpoints.dirpath
     if isfile(join(directory, "last.ckpt")):
         checkpoint_path = join(directory, "last.ckpt")
@@ -52,7 +52,36 @@ def load_model(cfg, dict_config, wandb_id, callbacks):
     trainer = instantiate(
         trainer, strategy=strategy, logger=logger, callbacks=callbacks,
     )
-    return trainer, model, ckpt_path
+    return trainer, model, ckpt_path '''
+
+def load_model(cfg, dict_config, wandb_id, callbacks):
+    logger = instantiate(cfg.logger, id=wandb_id, resume="allow")
+    
+    # checkpoint from path in eval mode
+    if cfg.mode == "eval" and cfg.eval.checkpoint_path is not None:
+        checkpoint_path = cfg.eval.checkpoint_path
+        print(f"[Eval] Loading checkpoint from: {checkpoint_path}")
+        model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
+    else:
+        # Fallback al checkpoint salvato localmente (es. in train)
+        directory = cfg.checkpoints.dirpath
+        checkpoint_path = join(directory, "last.ckpt")
+        if isfile(checkpoint_path):
+            print(f"Loading from checkpoint: {checkpoint_path}")
+            model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
+        else:
+            print("No checkpoint found, initializing new model.")
+            model = SitsScdModel(cfg.model)
+            checkpoint_path = None
+
+    trainer = instantiate(
+        cfg.trainer,
+        strategy=cfg.trainer.strategy,
+        logger=logger,
+        callbacks=callbacks,
+    )
+
+    return trainer, model, checkpoint_path
 
 
 def project_init(cfg):
