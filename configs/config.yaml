@@ -46,7 +46,7 @@ logger:
   project: sitsscd
   log_model: False
   offline: False
-  entity: imaginelab
+  entity: chiaranguyenba-politecnico-di-milano
 
 checkpoints:
   _target_: pytorch_lightning.callbacks.ModelCheckpoint

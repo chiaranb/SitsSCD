@@ -1,5 +1,5 @@
 name: Muds
-global_batch_size: 8
+global_batch_size: 2
 num_channels: 3
 num_classes: 2
 ignore_index: 2
