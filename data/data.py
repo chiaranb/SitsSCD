@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from .transforms import random_resize_crop, random_rotate, random_crop, random_flipv, random_fliph
 import time
 
-
+'''SitsDataset is a base class for datasets that handle time series of satellite images.'''
 class SitsDataset(Dataset):
     def __init__(self,
                  path,
@@ -20,12 +20,22 @@ class SitsDataset(Dataset):
                  num_classes,
                  img_size,
                  true_size,
-                 train_length):
+                 train_length,
+                 force_no_domain_shift=False):  # Enable to force no domain shift for val/test
         super(SitsDataset, self).__init__()
         self.path = path
-        self.image_folder, self.gt_folder = join(path, split if domain_shift else 'train'), join(path, 'labels')
-        self.split = split
-        self.domain_shift = domain_shift
+        # If force_no_domain_shift is True, force domain_shift to False for val/test
+        if force_no_domain_shift and split in ['val', 'test']:
+            effective_domain_shift = False
+            print(f"Force no domain shift activated for {split} split")
+        else:
+            effective_domain_shift = domain_shift
+            
+        self.image_folder, self.gt_folder = join(path, split if effective_domain_shift else 'train'), join(path, 'labels')
+        self.split = split 
+        self.domain_shift = effective_domain_shift  # Usa il valore effettivo
+        self.original_domain_shift = domain_shift   # Mantieni il valore originale per riferimento
+        self.force_no_domain_shift = force_no_domain_shift
         self.num_channels = num_channels
         self.num_classes = num_classes
         self.img_size = img_size
@@ -36,13 +46,14 @@ class SitsDataset(Dataset):
         self.collate_fn = collate_fn
         self.mean, self.std, self.month_list = None, None, None  # Needs to be defined in subclass
 
+    '''Return the number of patches, each image is split into patches of size img_size x img_size (128x128).'''
     def __len__(self):
         if self.split == 'train':
-            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4)
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4) # 4 patches are removed to avoid border effects (60)
         elif self.domain_shift:
-            return len(self.sits_ids) * (self.true_size // self.img_size) ** 2
+            return len(self.sits_ids) * (self.true_size // self.img_size) ** 2 # Uses all patches (64) per location
         else:
-            return len(self.sits_ids) * 2
+            return len(self.sits_ids) * 2 # Uses only 2 corner patches per location
 
     def __getitem__(self, i):
         """Returns an item from the dataset.
@@ -62,12 +73,14 @@ class SitsDataset(Dataset):
             patch_loc_i, patch_loc_j = None, None
             months = self.get_random_months(sits_number)
         elif self.domain_shift:
+            # Uses all patches (64) per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2
             sits_number = i // num_patches_per_sits
             patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size)
             patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size)
             months = list(range(24))
         else:
+            # Uses only 2 corner patches per location
             num_patches_per_sits = 2
             sits_number = i // num_patches_per_sits
             patch_loc_i, patch_loc_j = self.get_loc_per_split(i % num_patches_per_sits)
@@ -86,9 +99,14 @@ class SitsDataset(Dataset):
         """Returns the ground truth label of the given split."""
         start_time = time.time()
         if self.domain_shift:
-            sits_ids = json.load(open(join(self.path, 'split.json')))[split]
+            sits_ids = json.load(open(join(self.path, 'split.json')))[split] # Different locations
+            print(f"Loading {split} split with domain shift (different locations)")
         else:
-            sits_ids = json.load(open(join(self.path, 'split.json')))['train']
+            sits_ids = json.load(open(join(self.path, 'split.json')))['train'] # Same locations
+            if self.force_no_domain_shift and split in ['val', 'test']:
+                print(f"Loading {split} split without domain shift (same locations as train)")
+            else:
+                print(f"Loading {split} split without domain shift")
         sits_ids.sort()
         num_sits = len(sits_ids)
         gt = torch.zeros((num_sits, 24, 1024, 1024), dtype=torch.int8)
@@ -115,11 +133,14 @@ class SitsDataset(Dataset):
     def normalize(self, data):
         return (data - self.mean) / self.std
 
+    """Returns the location of the patches for the given split. 
+    val uses bottom-right corner patches, test uses diagonal corner patches."""
     def get_loc_per_split(self, i):
         return {'val': [self.true_size // self.img_size - 1 - i, self.true_size // self.img_size - 1 - i],
                 'test': [self.true_size // self.img_size - 1 - i, self.true_size // self.img_size - 2 + i]
                 }[self.split]
-
+    
+    """Returns a list of months for the given sits_number, shuffled and limited to train_length."""
     def get_random_months(self, sits_number):
         months = self.month_list[sits_number]
         random.shuffle(months)
@@ -143,6 +164,7 @@ class Muds(SitsDataset):
             img_size=128,
             true_size=1024,
             train_length=6,
+            force_no_domain_shift=False,  # Nuovo parametro
     ):
         super(Muds, self).__init__(path=path,
                                    split=split,
@@ -151,12 +173,14 @@ class Muds(SitsDataset):
                                    num_classes=num_classes,
                                    img_size=img_size,
                                    true_size=true_size,
-                                   train_length=train_length)
+                                   train_length=train_length,
+                                   force_no_domain_shift=force_no_domain_shift)  # Passa il parametro
         """Initializes the dataset.
         Args:
             path (str): path to the dataset
             split (str): split to use (train, val, test)
             domain_shift (bool): if val/test, whether we are in a domain shift setting or not
+            force_no_domain_shift (bool): if True, forces no domain shift for val/test
         """
         month_list = [(((self.gt[k].float() - 2) ** 2).mean((1, 2)) == 0).int().numpy().tolist() for k in range(self.gt.shape[0])]
         self.month_list = [[j for j in range(24) if month_list[i][j] == 0] for i in range(len(month_list))]
@@ -188,7 +212,8 @@ class DynamicEarthNet(SitsDataset):
             img_size=128,
             true_size=1024,
             train_length=6,
-            date_aug_range=2
+            date_aug_range=2,
+            force_no_domain_shift=False,  # Nuovo parametro
     ):
 
         super(DynamicEarthNet, self).__init__(path=path,
@@ -198,12 +223,14 @@ class DynamicEarthNet(SitsDataset):
                                               num_classes=num_classes,
                                               img_size=img_size,
                                               true_size=true_size,
-                                              train_length=train_length)
+                                              train_length=train_length,
+                                              force_no_domain_shift=force_no_domain_shift)  # Passa il parametro
         """Initializes the dataset.
         Args:
             path (str): path to the dataset
             split (str): split to use (train, val, test)
             domain_shift (bool): if val/test, whether we are in a domain shift setting or not
+            force_no_domain_shift (bool): if True, forces no domain shift for val/test
         """
         self.date_aug_range = date_aug_range
         self.monthly_dates = get_monthly_dates_dict()
@@ -212,6 +239,7 @@ class DynamicEarthNet(SitsDataset):
         self.mean = torch.tensor([83.1029, 80.7615, 69.3328, 133.8648], dtype=torch.float16).reshape(4, 1, 1)
         self.std = torch.tensor([33.2714, 25.5288, 23.9868, 30.5591], dtype=torch.float16).reshape(4, 1, 1)
 
+    """Loads two images (RGB and Infrared) for each month of the given sits_id."""
     def load_data(self, sits_number, sits_id, months, curr_sits_path):
         data = torch.zeros((len(months), self.num_channels, self.true_size, self.true_size), dtype=torch.float16)
         days = [self.random_date_augmentation(month) for month in months]
@@ -222,6 +250,7 @@ class DynamicEarthNet(SitsDataset):
             data[d, 3] = torchvision.io.read_image(join(curr_sits_path, n_infra))
         return data, days
 
+    """Randomly augments the date for training, otherwise returns the original date."""
     def random_date_augmentation(self, month):
         if self.split == 'train':
             return max(0, random.randint(0, self.date_aug_range * 2) - self.date_aug_range + self.monthly_dates[month])
@@ -244,7 +273,7 @@ def collate_fn(batch):
         output[key] = torch.stack([x[key] for x in batch])
     return output
 
-
+"""Returns a list of monthly dates as indices for the dataset."""
 def get_monthly_dates_dict():
     s_date = date(2018, 1, 1)
     e_date = date(2019, 12, 31)

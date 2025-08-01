@@ -13,6 +13,7 @@ class ImageDataModule(L.LightningDataModule):
         test_dataset_in,
         global_batch_size,
         num_workers,
+        enable_domain_shift=False, # Whether to enable domain shift
         num_nodes=1,
         num_devices=1,
     ):
@@ -26,7 +27,9 @@ class ImageDataModule(L.LightningDataModule):
         }
         self.num_workers = num_workers
         self.batch_size = global_batch_size // (num_nodes * num_devices)
+        self.enable_domain_shift = enable_domain_shift
         print(f"Each GPU will receive {self.batch_size} images")
+        print(f"Domain shift enabled: {self.enable_domain_shift}")
 
     @property
     def num_classes(self):
@@ -45,16 +48,25 @@ class ImageDataModule(L.LightningDataModule):
         start_time = time.time()
         if stage == "fit" or stage is None:
             self.train_dataset = self._builders["train"]()
-            self.val_dataset_out = self._builders["val_out"]()
-            self.val_dataset_in = self._builders["val_in"]()
-            print(f"Train dataset size: {len(self.train_dataset)}")
-            print(f"Out-of-domain val dataset size: {len(self.val_dataset_out)}")
-            print(f"In-domain val dataset size: {len(self.val_dataset_in)}")
+            if self.enable_domain_shift:
+                self.val_dataset_out = self._builders["val_out"]()
+                self.val_dataset_in = self._builders["val_in"]()
+                print(f"Train dataset size: {len(self.train_dataset)}")
+                print(f"Out-of-domain val dataset size: {len(self.val_dataset_out)}")
+                print(f"In-domain val dataset size: {len(self.val_dataset_in)}")
+            else:
+                self.val_dataset_in = self._builders["val_in"](force_no_domain_shift=True)
+                print(f"Train dataset size: {len(self.train_dataset)}")
+                print(f"Val dataset size: {len(self.val_dataset_in)}")
         else:
-            self.test_dataset_out = self._builders["test_out"]()
-            self.test_dataset_in = self._builders["test_in"]()
-            print(f"Out-of-domain test dataset size: {len(self.test_dataset_out)}")
-            print(f"In-domain test dataset size: {len(self.test_dataset_in)}")
+            if self.enable_domain_shift:
+                self.test_dataset_out = self._builders["test_out"]()
+                self.test_dataset_in = self._builders["test_in"]()
+                print(f"Out-of-domain test dataset size: {len(self.test_dataset_out)}")
+                print(f"In-domain test dataset size: {len(self.test_dataset_in)}")
+            else:
+                self.test_dataset_in = self._builders["test_in"](force_no_domain_shift=True)
+                print(f"Test dataset size: {len(self.test_dataset_in)}")
         end_time = time.time()
         print(f"Setup took {(end_time - start_time):.2f} seconds")
 
@@ -62,7 +74,7 @@ class ImageDataModule(L.LightningDataModule):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=True, # Data randomization
             pin_memory=False,
             drop_last=True,
             num_workers=self.num_workers,
@@ -70,37 +82,55 @@ class ImageDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self):
-        return [DataLoader(
-            self.val_dataset_out,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=False,
-            num_workers=self.num_workers,
-            collate_fn=self.val_dataset_out.collate_fn,
-        ), DataLoader(
-            self.val_dataset_in,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=False,
-            num_workers=self.num_workers,
-            collate_fn=self.val_dataset_in.collate_fn,
-        )
-        ]
+        if self.enable_domain_shift:
+            return [DataLoader(
+                self.val_dataset_out,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.val_dataset_out.collate_fn,
+            ), DataLoader(
+                self.val_dataset_in,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.val_dataset_in.collate_fn,
+            )]
+        else:
+            return DataLoader(
+                self.val_dataset_in,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.val_dataset_in.collate_fn,
+            )
 
     def test_dataloader(self):
-        return [DataLoader(
-            self.test_dataset_out,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=False,
-            num_workers=self.num_workers,
-            collate_fn=self.test_dataset_out.collate_fn,
-        ), DataLoader(
-            self.test_dataset_in,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=False,
-            num_workers=self.num_workers,
-            collate_fn=self.test_dataset_in.collate_fn,
-        )
-        ]
+        if self.enable_domain_shift:
+            return [DataLoader(
+                self.test_dataset_out,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.test_dataset_out.collate_fn,
+            ), DataLoader(
+                self.test_dataset_in,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.test_dataset_in.collate_fn,
+            )]
+        else:
+            return DataLoader(
+                self.test_dataset_in,
+                batch_size=1,
+                shuffle=False,
+                pin_memory=False,
+                num_workers=self.num_workers,
+                collate_fn=self.test_dataset_in.collate_fn,
+            )
