@@ -11,6 +11,7 @@ from .transforms import random_resize_crop, random_rotate, random_crop, random_f
 import time
 
 '''SitsDataset is a base class for datasets that handle time series of satellite images.'''
+'''SitsDataset is a base class for datasets that handle time series of satellite images.'''
 class SitsDataset(Dataset):
     def __init__(self,
                  path,
@@ -47,12 +48,16 @@ class SitsDataset(Dataset):
         self.mean, self.std, self.month_list = None, None, None  # Needs to be defined in subclass
 
     '''Return the number of patches, each image is split into patches of size img_size x img_size (128x128).'''
+    '''Return the number of patches, each image is split into patches of size img_size x img_size (128x128).'''
     def __len__(self):
         if self.split == 'train':
             return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4) # 4 patches are removed to avoid border effects (60)
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4) # 4 patches are removed to avoid border effects (60)
         elif self.domain_shift:
             return len(self.sits_ids) * (self.true_size // self.img_size) ** 2 # Uses all patches (64) per location
+            return len(self.sits_ids) * (self.true_size // self.img_size) ** 2 # Uses all patches (64) per location
         else:
+            return len(self.sits_ids) * 2 # Uses only 2 corner patches per location
             return len(self.sits_ids) * 2 # Uses only 2 corner patches per location
 
     def __getitem__(self, i):
@@ -74,12 +79,14 @@ class SitsDataset(Dataset):
             months = self.get_random_months(sits_number)
         elif self.domain_shift:
             # Uses all patches (64) per location
+            # Uses all patches (64) per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2
             sits_number = i // num_patches_per_sits
             patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size)
             patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size)
             months = list(range(24))
         else:
+            # Uses only 2 corner patches per location
             # Uses only 2 corner patches per location
             num_patches_per_sits = 2
             sits_number = i // num_patches_per_sits

@@ -16,7 +16,7 @@ from lightning_fabric.utilities.rank_zero import _get_rank
 # https://omegaconf.readthedocs.io/en/2.3_branch/how_to_guides.html
 OmegaConf.register_new_resolver("eval", eval)
 
-
+"""Initializes W&B with a unique ID, either from the config or generated."""
 def wandb_init(cfg):
     directory = cfg.checkpoints.dirpath
     if isfile(join(directory, "wandb_id.txt")):
@@ -24,16 +24,26 @@ def wandb_init(cfg):
             wandb_id = f.readline()
     else:
         rank = _get_rank()
-        wandb_id = wandb.util.generate_id()
+        wandb_id = wandb.util.generate_id() # Generate a new W&B ID
         print(f"Generated wandb id: {wandb_id}")
         if rank == 0 or rank is None:
             with open(join(directory, "wandb_id.txt"), "w") as f:
                 f.write(str(wandb_id))
 
-    return wandb_id
+    return wandb_id 
 
+    
+"""def wandb_init(cfg):
+    if cfg.get("wandb") and cfg.wandb.id is not None:
+        wandb_id = cfg.wandb.id
+        print(f"[W&B] Using wandb ID from CLI/config: {wandb_id}")
+    else:
+        wandb_id = wandb.util.generate_id()
+        print(f"[W&B] Generated new wandb ID: {wandb_id}")
+    return wandb_id """
 
-''' def load_model(cfg, dict_config, wandb_id, callbacks):
+"""Loads the model from a checkpoint if available, otherwise initializes a new model."""
+def load_model(cfg, dict_config, wandb_id, callbacks):
     directory = cfg.checkpoints.dirpath
     if isfile(join(directory, "last.ckpt")):
         checkpoint_path = join(directory, "last.ckpt")
@@ -52,9 +62,9 @@ def wandb_init(cfg):
     trainer = instantiate(
         trainer, strategy=strategy, logger=logger, callbacks=callbacks,
     )
-    return trainer, model, ckpt_path '''
+    return trainer, model, ckpt_path
 
-def load_model(cfg, dict_config, wandb_id, callbacks):
+"""def load_model(cfg, dict_config, wandb_id, callbacks):
     logger = instantiate(cfg.logger, id=wandb_id, resume="allow")
     
     # checkpoint from path in eval mode
@@ -62,17 +72,15 @@ def load_model(cfg, dict_config, wandb_id, callbacks):
         checkpoint_path = cfg.eval.checkpoint_path
         print(f"[Eval] Loading checkpoint from: {checkpoint_path}")
         model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
+    elif cfg.mode == "train" and cfg.train.checkpoint_path is not None:
+        # checkpoint from path in train mode
+        checkpoint_path = cfg.train.checkpoint_path
+        print(f"[Train] Loading checkpoint from: {checkpoint_path}")
+        model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
     else:
-        # Fallback al checkpoint salvato localmente (es. in train)
-        directory = cfg.checkpoints.dirpath
-        checkpoint_path = join(directory, "last.ckpt")
-        if isfile(checkpoint_path):
-            print(f"Loading from checkpoint: {checkpoint_path}")
-            model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
-        else:
-            print("No checkpoint found, initializing new model.")
-            model = SitsScdModel(cfg.model)
-            checkpoint_path = None
+        print("No checkpoint found, initializing new model.")
+        model = SitsScdModel(cfg.model)
+        checkpoint_path = None
 
     trainer = instantiate(
         cfg.trainer,
@@ -81,16 +89,16 @@ def load_model(cfg, dict_config, wandb_id, callbacks):
         callbacks=callbacks,
     )
 
-    return trainer, model, checkpoint_path
+    return trainer, model, checkpoint_path """
 
-
+"""Sets up the project directory and saves config for reproducibility."""
 def project_init(cfg):
     print("Working directory set to {}".format(os.getcwd()))
     directory = cfg.checkpoints.dirpath
     os.makedirs(directory, exist_ok=True)
     copyfile(".hydra/config.yaml", join(directory, "config.yaml"))
 
-
+"""Creates two checkpoint callbacks, a progress bar, and a learning rate monitor."""
 def callback_init(cfg):
     monitor = cfg.checkpoints["monitor"]
     filename = cfg.checkpoints["filename"]
@@ -105,12 +113,12 @@ def callback_init(cfg):
     callbacks = [checkpoint_callback_out, checkpoint_callback_in, progress_bar, lr_monitor]
     return callbacks
 
-
+"""Instantiates the data module from the configuration."""
 def init_datamodule(cfg):
     datamodule = instantiate(cfg.datamodule)
     return datamodule
 
-
+"""Combines all initialization steps into a single function."""
 def hydra_boilerplate(cfg):
     dict_config = OmegaConf.to_container(cfg, resolve=True)
     callbacks = callback_init(cfg)
@@ -126,6 +134,7 @@ def main(cfg):
     trainer, model, datamodule, ckpt_path = hydra_boilerplate(cfg)
     model.datamodule = datamodule
     if cfg.mode == "train":
+        print(f"Using precision: {trainer.precision_plugin.precision}")
         trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
     elif cfg.mode == "eval":
         trainer.test(model, datamodule=datamodule)

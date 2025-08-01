@@ -9,7 +9,7 @@ import torch.nn as nn
 class TemporallySharedBlock(nn.Module):
     """
     Helper module for convolutional encoding blocks that are shared across a sequence.
-    This module adds the self.smart_forward() method the the block.
+    This module adds the self.smart_forward() method to the block.
     smart_forward will combine the batch and temporal dimension of an input tensor
     if it is 5-D and apply the shared convolutions to all the (batch x temp) positions.
     """
@@ -23,13 +23,13 @@ class TemporallySharedBlock(nn.Module):
         if len(input.shape) == 4:
             return self.forward(input)
         else:
-            b, t, c, h, w = input.shape
+            b, t, c, h, w = input.shape # BxTxCxHxW input
 
             if self.pad_value is not None:
                 dummy = torch.zeros(input.shape, device=input.device).float()
                 self.out_shape = self.forward(dummy.view(b * t, c, h, w)).shape
 
-            out = input.view(b * t, c, h, w)
+            out = input.view(b * t, c, h, w) # Combine batch and temporal dimensions
             if self.pad_value is not None:
                 pad_mask = (out == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
                 if pad_mask.any():
@@ -50,6 +50,7 @@ class TemporallySharedBlock(nn.Module):
             return out
 
 
+"""Stack of Conv2d layers with optional normalization and ReLU activation."""
 class ConvLayer(nn.Module):
     def __init__(
         self,
@@ -98,7 +99,7 @@ class ConvLayer(nn.Module):
     def forward(self, input):
         return self.conv(input)
 
-
+"""Convolutional block that wraps ConvLayer inside a TemporallySharedBlock."""
 class ConvBlock(TemporallySharedBlock):
     def __init__(
         self,
@@ -119,7 +120,7 @@ class ConvBlock(TemporallySharedBlock):
     def forward(self, input):
         return self.conv(input)
 
-
+"""Spatial downsampling block with two convolutional layers."""
 class DownConvBlock(TemporallySharedBlock):
     def __init__(
         self,
@@ -133,6 +134,7 @@ class DownConvBlock(TemporallySharedBlock):
         padding_mode="reflect"
     ):
         super(DownConvBlock, self).__init__(pad_value=pad_value)
+        # Strided convolution for downsampling image resolution
         self.down = ConvLayer(
             nkernels=[d_in, d_in],
             norm=norm,
@@ -141,11 +143,13 @@ class DownConvBlock(TemporallySharedBlock):
             p=p,
             padding_mode=padding_mode,
         )
+        # Linear projection to reduce channels
         self.conv1 = ConvLayer(
             nkernels=[d_in, d_out],
             norm=norm,
             padding_mode=padding_mode,
         )
+        # Second convolutional layer
         self.conv2 = ConvLayer(
             nkernels=[d_out, d_out],
             norm=norm,
@@ -155,10 +159,10 @@ class DownConvBlock(TemporallySharedBlock):
     def forward(self, input):
         out = self.down(input)
         out = self.conv1(out)
-        out = out + self.conv2(out)
+        out = out + self.conv2(out) # Residual connection
         return out
 
-
+"""Spatial upsampling block with transposed convolution."""
 class UpConvBlock(nn.Module):
     def __init__(
         self, d_in, d_out, k, s, p, norm="batch", d_skip=None, padding_mode="reflect"
@@ -183,14 +187,14 @@ class UpConvBlock(nn.Module):
         )
 
     def forward(self, input, skip):
-        bs, seq_len, c, h, w = input.size()
+        bs, seq_len, c, h, w = input.size() # BxTxCxHxW input
         input = input.contiguous().view(bs * seq_len, c, h, w)
-        out = self.up(input)
+        out = self.up(input) # Upsample input
         _, _, cs, hs, ws = skip.size()
         skip = skip.view(bs * seq_len, cs, hs, ws)
-        out = torch.cat([out, self.skip_conv(skip)], dim=1)
-        out = self.conv1(out)
-        out = out + self.conv2(out)
+        out = torch.cat([out, self.skip_conv(skip)], dim=1) # Concatenate skip connection
+        out = self.conv1(out) # Apply first convolution
+        out = out + self.conv2(out) # Residual connection
         _, c, h, w = out.size()
         out = out.view(bs, seq_len, c, h, w)
         return out

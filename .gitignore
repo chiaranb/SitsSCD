@@ -1,4 +1,5 @@
 /datasets
-/checkpoints
 /outputs
+/checkpoints
 /wandb
+*.pyc

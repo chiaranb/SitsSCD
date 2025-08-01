@@ -28,6 +28,7 @@ class ImageDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.batch_size = global_batch_size // (num_nodes * num_devices)
         self.enable_domain_shift = enable_domain_shift
+        self.enable_domain_shift = enable_domain_shift
         print(f"Each GPU will receive {self.batch_size} images")
         print(f"Domain shift enabled: {self.enable_domain_shift}")
 

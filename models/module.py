@@ -2,6 +2,8 @@ import pytorch_lightning as L
 import torch
 import torch.nn as nn
 from hydra.utils import instantiate
+from pathlib import Path
+import numpy as np
 
 
 class SitsScdModel(L.LightningModule):
@@ -11,6 +13,7 @@ class SitsScdModel(L.LightningModule):
         self.model = instantiate(cfg.network.instance)
         self.loss = instantiate(cfg.loss.instance)
         self.ignore_index = self.loss.ignore_index
+        # Two sets of metrics for validation and testing, one for each domain
         self.val_metrics = {'out': instantiate(cfg.val_metrics), 'in': instantiate(cfg.val_metrics)}
         self.test_metrics = {'out': instantiate(cfg.test_metrics), 'in': instantiate(cfg.test_metrics)}
         self.domain_dict = {0: 'out', 1: 'in'}
@@ -52,19 +55,35 @@ class SitsScdModel(L.LightningModule):
     def test_step(self, batch, batch_idx, dataloader_idx):
         pred = self.model(batch)
         pred["pred"] = torch.argmax(pred["logits"], dim=2)
+        
+        # Save predictions to the output directory
+        domain = self.domain_dict[dataloader_idx]
+        output_dir = Path(self.cfg.output_dir) / "predictions" / domain
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        for i in range(pred["pred"].shape[0]):
+            pred_image = pred["pred"][i].cpu().numpy()
+            file_path = output_dir / f"{batch['sits_id'][i]}_pred.npy"
+            np.save(file_path, pred_image)
+
         self.test_metrics[self.domain_dict[dataloader_idx]].update(pred["pred"], batch["gt"])
 
     def on_test_epoch_end(self):
-        for dataloader_idx in ['out', 'in']:
-            metrics = self.test_metrics[dataloader_idx].compute()
-            for metric_name, metric_value in metrics.items():
-                self.log(
-                    f"test/{metric_name}_{dataloader_idx}",
-                    metric_value,
-                    sync_dist=True,
-                    on_step=False,
-                    on_epoch=True,
-                )
+        for dataloader_idx in [0, 1]:
+            if dataloader_idx in self.domain_dict:
+                domain_name = self.domain_dict[dataloader_idx]
+                metrics = self.test_metrics[domain_name].compute()
+                
+                print(f"\n=== DATALOADER {dataloader_idx} ({domain_name.upper()}) ===")
+                for metric_name, metric_value in metrics.items():
+                    print(f"{metric_name}: {metric_value}")
+                    self.log(
+                        f"test/{metric_name}_{dataloader_idx}",
+                        metric_value,
+                        sync_dist=True,
+                        on_step=False,
+                        on_epoch=True,
+                    )
 
     def configure_optimizers(self):
         if self.cfg.optimizer.exclude_ln_and_biases_from_weight_decay:

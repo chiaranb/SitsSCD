@@ -19,6 +19,10 @@ class SCDMetric(Metric):
         self.num_classes = num_classes
         self.class_names = class_names
         self.ignore_index = ignore_index
+        # Initializes three confusion matrices:
+        # 1. For semantic segmentation (num_classes x num_classes)
+        # 2. For binary change detection (2 x 2)
+        # 3. For semantic change segmentation (num_classes x num_classes)
         self.conf_matrix = np.zeros((num_classes, num_classes))
         self.conf_matrix_change = np.zeros((2, 2))
         self.conf_matrix_sc = np.zeros((num_classes, num_classes))
@@ -26,8 +30,8 @@ class SCDMetric(Metric):
     def update(self, pred, gt):
         """
         Update the confusion matrices
-        :param pred: B x T x H x W
-        :param gt: B x T x H x W
+        :param pred: B x T x H x W (Batch x Time x Height x Width)
+        :param gt: B x T x H x W (Batch x Time x Height x Width)
         :return: None
         """
         gt = gt.permute(1, 0, 2, 3).reshape(gt.shape[1], -1).long()  # T x N
@@ -51,6 +55,7 @@ class SCDMetric(Metric):
         mask_change = (gt_change >= 0) & (gt_change < 2) & (mixed_udm_mask == 1)
         mask_semantic_change = (gt[1:].flatten() >= 0) & (gt[1:].flatten() < self.num_classes) & (mixed_udm_mask == 1) & (gt_change == 1)
 
+        # Update confusion matrices
         self.conf_matrix += np.bincount(self.num_classes * gt.flatten()[mask].astype(int) + pred.flatten()[mask],
                                         minlength=self.num_classes ** 2).reshape(self.num_classes, self.num_classes)
 
@@ -64,7 +69,9 @@ class SCDMetric(Metric):
         conf_mat = self.conf_matrix
         conf_mat_change = self.conf_matrix_change
         conf_mat_sc = self.conf_matrix_sc
+        # Mean Intersection over Union (mIoU) and per-class IoU
         miou, per_class_iou = compute_miou(conf_mat)
+        # Binary Change Score (bc), Semantic Change Score (sc), and Semantic Change Segmentation Score (scs)
         sc, _ = compute_miou(conf_mat_sc)
         bc = np.divide(conf_mat_change[1, 1], conf_mat_change.sum() - conf_mat_change[0, 0],
                        out=np.zeros_like(conf_mat_change[1, 1]),
@@ -83,12 +90,13 @@ class SCDMetric(Metric):
         }
         for class_id, class_name in enumerate(self.class_names):
             output[class_name] = per_class_iou[class_id]
+        # Reset confusion matrices for the next computation
         self.conf_matrix = np.zeros((self.num_classes, self.num_classes))
         self.conf_matrix_change = np.zeros((2, 2))
         self.conf_matrix_sc = np.zeros((self.num_classes, self.num_classes))
         return output
 
-
+# Computes the mean intersection-over-union (mIoU) and per-class IoU from a confusion matrix.
 def compute_miou(confusion_matrix):
     den_iou = np.sum(confusion_matrix, axis=1) + np.sum(confusion_matrix, axis=0) - np.diag(confusion_matrix)
     per_class_iou = np.divide(np.diag(confusion_matrix), den_iou, out=np.zeros_like(den_iou), where=den_iou != 0)

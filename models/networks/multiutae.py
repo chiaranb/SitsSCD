@@ -51,6 +51,8 @@ class MultiUTAE(nn.Module):
             d_k (int): Key-Query space dimension
             pad_value (float): Value used by the dataloader for temporal padding.
             padding_mode (str): Spatial padding strategy for convolutional layers (passed to nn.Conv2d).
+            T (int): Period to use for the positional encoding.
+            offset (int): Offset to use for the positional encoding. 
         """
         super().__init__()
         self.encoder_widths = [in_features // 2, in_features // 2, in_features // 2, in_features]
@@ -71,12 +73,14 @@ class MultiUTAE(nn.Module):
             self.decoder_widths = self.encoder_widths
 
         in_conv_kernels = [input_dim] + [self.encoder_widths[0], self.encoder_widths[0]]
+        # First convolution block to encode input
         self.in_conv = ConvBlock(
             nkernels=in_conv_kernels,
             pad_value=pad_value,
             norm=encoder_norm,
             padding_mode=padding_mode,
         )
+        # Spatial encoder (downsampling path)
         self.down_blocks = nn.ModuleList(
             DownConvBlock(
                 d_in=self.encoder_widths[i],
@@ -90,6 +94,7 @@ class MultiUTAE(nn.Module):
             )
             for i in range(self.n_stages - 1)
         )
+        # Spatial decoder (upsampling path)
         self.up_blocks = nn.ModuleList(
             UpConvBlock(
                 d_in=self.decoder_widths[i],
@@ -103,6 +108,7 @@ class MultiUTAE(nn.Module):
             )
             for i in range(self.n_stages - 1, 0, -1)
         )
+        # Applies multi-head temporal attention
         self.temporal_encoder = MultiLTAE(
             in_channels=self.encoder_widths[-1],
             n_head=n_head,
@@ -111,24 +117,26 @@ class MultiUTAE(nn.Module):
             T=T,
             offset=offset
         )
+        # Aggregates attention-weighted skip features
         self.temporal_aggregator = Temporal_Aggregator(mode=agg_mode)
+        # Final convolution block to produce output logits
         self.out_conv = ConvBlock(nkernels=[self.decoder_widths[0]] + [in_features // 4, num_classes],
                                   padding_mode=padding_mode,
                                   norm='None')
 
     def forward(self, batch):
-        x = batch["data"]
+        x = batch["data"].float()  
         batch_positions = batch["positions"]
-        batch_size, seq_len, c, h, w = x.size()
+        batch_size, seq_len, c, h, w = x.size() # x is BxTxCxHxW
         if batch_positions is None:
             batch_positions = torch.tensor(range(1, x.shape[1]+1),
                                            dtype=torch.long,
                                            device=x.device)[None].expand(x.shape[0], -1, -1, -1, -1)
-
+        # Pad mask
         pad_mask = (
             (x == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
         )  # BxT pad mask
-        out = self.in_conv.smart_forward(x)
+        out = self.in_conv.smart_forward(x) # Apply initial convolution block
         feature_maps = [out]
 
         # SPATIAL ENCODER
@@ -143,15 +151,19 @@ class MultiUTAE(nn.Module):
 
         # SPATIAL DECODER
         for i in range(self.n_stages - 1):
-            skip = self.temporal_aggregator(
+            # Aggregate temporal features across time steps
+            skip = self.temporal_aggregator( 
                 feature_maps[-(i + 2)], pad_mask=pad_mask, attn_mask=att
             )
-            out = self.up_blocks[i](out, skip)
-
+            out = self.up_blocks[i](out, skip) # Apply upsampling block
+        # Final convolution block to produce output logits
         out = self.out_conv(out.view(batch_size * seq_len, -1, h, w)).view(batch_size, seq_len, -1, h, w)
         return {"logits": out}
 
-
+"""Used to aggregate temporal features across time steps. It uses different strategies based on the mode.
+- 'att_group': Uses grouped multi-head attention to weight each time step.
+- 'att_mean': Averages the attention masks across heads and uses them to weight features.
+- 'mean': Averages the features across time steps, excluding padded dates."""
 class Temporal_Aggregator(nn.Module):
     def __init__(self, mode="mean"):
         super(Temporal_Aggregator, self).__init__()
@@ -178,6 +190,7 @@ class Temporal_Aggregator(nn.Module):
                 out = out.sum(dim=2)  # sum on temporal dim -> hxBxC/hxHxW
                 out = torch.cat([group for group in out], dim=1)  # -> BxCxHxW
                 return out
+
             elif self.mode == "att_mean":
                 attn = attn_mask.mean(dim=0)  # average over heads -> BxTxHxW
                 attn = nn.Upsample(
@@ -186,26 +199,48 @@ class Temporal_Aggregator(nn.Module):
                 attn = attn * (~pad_mask).float()[:, :, None, None]
                 out = (x * attn[:, :, None, :, :]).sum(dim=1)
                 return out
+
             elif self.mode == "mean":
                 out = x * (~pad_mask).float()[:, :, None, None, None]
                 out = out.sum(dim=1) / (~pad_mask).sum(dim=1)[:, None, None, None]
                 return out
-        else:
+
+        else:  # No pad mask
             if self.mode == "att_group":
                 n_heads, b, t, _, h, w = attn_mask.shape
-                attn = attn_mask.contiguous().view(n_heads * b * t, t, h, w)
-                if x.shape[-2] > w:
-                    attn = nn.Upsample(
-                        size=x.shape[-2:], mode="bilinear", align_corners=False
-                    )(attn)
-                else:
-                    attn = nn.AvgPool2d(kernel_size=w // x.shape[-2])(attn)
-                attn = attn.view(n_heads, b, t, t, *x.shape[-2:])  # hxBxTxTxHxW
-                out = torch.stack(x.chunk(n_heads, dim=2))  # hxBxTx(C/h)xHxW
-                out = torch.einsum('nbtuhw, nbukhw -> nbtukhw', attn, out)
-                out = out.sum(dim=3)  # sum on temporal dim -> hxBxTx(C/h)xHxW
-                out = torch.cat([group for group in out], dim=2)  # -> BxTxCxHxW
+                attn = attn_mask  # [n_heads, B, T, T, H, W]
+
+                out_chunks = []
+                x_chunks = x.chunk(n_heads, dim=2)  # -> list of [B, T, C/h, H, W]
+
+                for h in range(n_heads):
+                    x_h = x_chunks[h]                      # [B, T, C/h, H, W]
+                    attn_h = attn[h]                       # [B, T, T, H, W]
+
+                    weighted = []
+                    for t in range(attn_h.shape[1]):
+                        attn_weights = attn_h[:, t]        # [B, T, H, W]
+                        attn_weights = attn_weights.unsqueeze(2)  # [B, T, 1, H, W]
+
+                        B, T, _, H, W = attn_weights.shape
+                        attn_weights = attn_weights.reshape(B * T, 1, H, W)
+                        attn_weights = torch.nn.functional.interpolate(
+                            attn_weights,
+                            size=x_h.shape[-2:],  # (H_out, W_out)
+                            mode='bilinear',
+                            align_corners=False
+                        )
+                        attn_weights = attn_weights.view(B, T, 1, x_h.shape[-2], x_h.shape[-1])
+
+                        attn_weights = attn_weights.expand(-1, -1, x_h.shape[2], -1, -1)  # [B, T, C/h, H, W]
+                        weighted_t = (attn_weights * x_h).sum(dim=1)  # [B, C/h, H, W]
+                        weighted.append(weighted_t)
+
+                    out_chunks.append(torch.stack(weighted, dim=1))  # [B, T, C/h, H, W]
+
+                out = torch.cat(out_chunks, dim=2)  # -> [B, T, C, H, W]
                 return out
+
             elif self.mode == "att_mean":
                 attn = attn_mask.mean(dim=0)  # average over heads -> BxTxHxW
                 attn = nn.Upsample(
@@ -213,6 +248,7 @@ class Temporal_Aggregator(nn.Module):
                 )(attn)
                 out = (x * attn[:, :, None, :, :]).sum(dim=1)
                 return out
+
             elif self.mode == "mean":
                 return x.mean(dim=1)
 

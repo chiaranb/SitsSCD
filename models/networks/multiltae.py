@@ -28,10 +28,7 @@ class MultiLTAE(nn.Module):
             in_channels (int): Number of channels of the input embeddings.
             n_head (int): Number of attention heads.
             d_k (int): Dimension of the key and query vectors.
-            mlp (List[int]): Widths of the layers of the MLP that processes the concatenated outputs of the attention heads.
             dropout (float): dropout
-            d_model (int, optional): If specified, the input tensors will first processed by a fully connected layer
-                to project them into a feature space of dimension d_model.
             T (int): Period to use for the positional encoding.
             return_att (bool): If true, the module returns the attention masks along with the embeddings (default False)
             positional_encoding (bool): If False, no positional encoding is used (default True).
@@ -43,17 +40,18 @@ class MultiLTAE(nn.Module):
         self.n_head = n_head
         self.d_model = in_channels
         assert self.mlp[0] == self.d_model
-
+        # Positional encoding
         if positional_encoding:
             self.positional_encoder = PositionalEncoder(
                 self.d_model // n_head, T=T, repeat=n_head, offset=offset
             )
         else:
             self.positional_encoder = None
-
+        # Attention heads
         self.attention_heads = MultiHeadAttention(
             n_head=n_head, d_k=d_k, d_in=self.d_model
         )
+        # Normalization layers
         self.in_norm = nn.GroupNorm(
             num_groups=n_head,
             num_channels=self.in_channels,
@@ -62,7 +60,7 @@ class MultiLTAE(nn.Module):
             num_groups=n_head,
             num_channels=self.mlp[-1],
         )
-
+        # MLP
         layers = []
         for i in range(len(self.mlp) - 1):
             layers.extend(
@@ -89,9 +87,9 @@ class MultiLTAE(nn.Module):
             )
 
         out = x.permute(0, 3, 4, 1, 2).contiguous().view(sz_b * h * w, seq_len, d)
-        out = self.in_norm(out.permute(0, 2, 1)).permute(0, 2, 1)
+        out = self.in_norm(out.permute(0, 2, 1)).permute(0, 2, 1) # Normalize input
 
-        if self.positional_encoder is not None:
+        if self.positional_encoder is not None: # Add positional encoding if enabled
             bp = (
                 batch_positions.unsqueeze(-1)
                 .repeat((1, 1, h))
@@ -101,9 +99,10 @@ class MultiLTAE(nn.Module):
             bp = bp.permute(0, 2, 3, 1).contiguous().view(sz_b * h * w, seq_len)
             out = out + self.positional_encoder(bp)
 
+        # Apply multi-head attention
         out, attn = self.attention_heads(out, pad_mask=pad_mask)  # h x (sz_b*h*w) x t x (d//h), h x (sz_b*h*w) x t x t
         out = out.permute(1, 2, 0, 3).contiguous().view(sz_b * h * w, seq_len, -1)  # Concatenate heads
-
+        # Apply MLP and normalization
         out = self.dropout(self.mlp(out.view(sz_b * h * w * seq_len, -1)))
         out = self.out_norm(out) if self.out_norm is not None else out
         out = out.view(sz_b, h, w, seq_len, -1).permute(0, 3, 4, 1, 2)
@@ -141,6 +140,7 @@ class MultiHeadAttention(nn.Module):
         d_k, d_in, n_head = self.d_k, self.d_in, self.n_head
         sz_b, seq_len, _ = v.size()
 
+        # Apply linear transformations to the input to get queries and keys
         q = self.fc1_q(v).view(sz_b, seq_len, n_head, d_k)
         q = q.permute(2, 0, 1, 3).contiguous().view(-1, seq_len, d_k).permute(0, 2, 1)  # (n*b) x dk x lk
 
@@ -152,10 +152,11 @@ class MultiHeadAttention(nn.Module):
                 (n_head, 1)
             )  # replicate pad_mask for each head (nxb) x lk
 
+        # Split v into n_head parts
         v = torch.stack(v.split(v.shape[-1] // n_head, dim=-1)).view(
             n_head * sz_b, seq_len, -1
         )
-        output, attn = self.attention(q, k, v, pad_mask=pad_mask)
+        output, attn = self.attention(q, k, v, pad_mask=pad_mask) # Applies scaled dot-product attention
         attn = attn.view(n_head, sz_b, seq_len, seq_len)
         output = output.view(n_head, sz_b, seq_len, d_in // n_head)
         return output, attn
@@ -172,14 +173,18 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
         self.softmax = nn.Softmax(dim=2)
 
+    """Input:
+    - q: query, what we are trying to understand
+    - k: key, what we are trying to match against
+    - v: value, what we are trying to retrieve"""
     def forward(self, q, k, v, pad_mask=None):
-        attn = torch.matmul(k, q)
-        attn = attn / self.temperature
+        attn = torch.matmul(k, q) # Compute similarity between keys and queries
+        attn = attn / self.temperature # Scale the attention scores
 
-        if pad_mask is not None:
+        if pad_mask is not None: # Eventually mask out padded positions
             attn = attn.masked_fill(pad_mask.unsqueeze(1), -1e3)
 
-        attn = self.softmax(attn)
-        attn = self.dropout(attn)
-        output = torch.matmul(attn, v)
+        attn = self.softmax(attn) # Normalize the attention scores
+        attn = self.dropout(attn) 
+        output = torch.matmul(attn, v) # Compute the output as a weighted sum of values
         return output, attn
