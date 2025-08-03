@@ -1,0 +1,8 @@
+devices: 1
+num_nodes: 1
+accelerator: cpu
+precision: 16-mixed
+strategy: auto
+sync_batchnorm: False
+num_workers: 4
+progress_bar_refresh_rate: 2

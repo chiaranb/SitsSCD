@@ -4,6 +4,7 @@ num_channels: 3
 num_classes: 2
 ignore_index: 2
 class_names: ["not building", "building"]
+domain_shift_type: temporal # Options: none, spatial, temporal
 
 train_dataset:
   _partial_: true
@@ -11,30 +12,46 @@ train_dataset:
   path: ${data_dir}/Muds/
   split: train
   train_length: 12
+  domain_shift_type: ${dataset.domain_shift_type} 
 
 val_dataset_out:
   _partial_: true
   _target_: data.data.Muds
   path: ${data_dir}/Muds/
   split: val
-  domain_shift: true
+  domain_shift_type: spatial
+
+val_dataset_temporal:
+  _partial_: true
+  _target_: data.data.Muds
+  path: ${data_dir}/Muds/
+  split: val
+  domain_shift_type: temporal
 
 val_dataset_in:
   _partial_: true
   _target_: data.data.Muds
   path: ${data_dir}/Muds/
   split: val
-  domain_shift: false
+  domain_shift_type: none
 
 test_dataset_out:
   _partial_: true
   _target_: data.data.Muds
   path: ${data_dir}/Muds/
   split: test
-  domain_shift: true
+  domain_shift_type: spatial
+
+test_dataset_temporal:
+  _partial_: true
+  _target_: data.data.Muds
+  path: ${data_dir}/Muds/
+  split: test
+  domain_shift_type: temporal
 
 test_dataset_in:
   _partial_: true
   _target_: data.data.Muds
   path: ${data_dir}/Muds/
   split: test
+  domain_shift_type: none

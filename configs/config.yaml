@@ -1,10 +1,12 @@
 defaults:
   - model: baseline
-  - computer: gpu
-  - dataset: dynamicearthnet
+  - computer: cpu
+  - dataset: muds
   - _self_
 
 model:
+  output_dir: outputs/
+
   val_metrics:
     _target_: metrics.scd_metrics.SCDMetric
     num_classes: ${dataset.num_classes}
@@ -19,10 +21,13 @@ model:
 
 datamodule:
   _target_: data.datamodule.ImageDataModule
+  domain_shift_type: ${dataset.domain_shift_type} # Added to handle domain shift
   train_dataset: ${dataset.train_dataset}
   val_dataset_out: ${dataset.val_dataset_out}
+  val_dataset_temporal: ${dataset.val_dataset_temporal}
   val_dataset_in: ${dataset.val_dataset_in}
   test_dataset_out: ${dataset.test_dataset_out}
+  test_dataset_temporal: ${dataset.test_dataset_temporal}
   test_dataset_in: ${dataset.test_dataset_in}
   global_batch_size: ${dataset.global_batch_size}
   num_workers: ${computer.num_workers}
@@ -36,8 +41,9 @@ trainer:
   strategy: ${computer.strategy}
   num_nodes: ${computer.num_nodes}
   precision: ${computer.precision}
-  max_epochs: 500
-  check_val_every_n_epoch: 10
+  max_epochs: 1
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0 # No sanity check for validation
 
 eval:
   checkpoint_path: null

@@ -32,16 +32,6 @@ def wandb_init(cfg):
 
     return wandb_id 
 
-    
-"""def wandb_init(cfg):
-    if cfg.get("wandb") and cfg.wandb.id is not None:
-        wandb_id = cfg.wandb.id
-        print(f"[W&B] Using wandb ID from CLI/config: {wandb_id}")
-    else:
-        wandb_id = wandb.util.generate_id()
-        print(f"[W&B] Generated new wandb ID: {wandb_id}")
-    return wandb_id """
-
 """Loads the model from a checkpoint if available, otherwise initializes a new model."""
 def load_model(cfg, dict_config, wandb_id, callbacks):
     directory = cfg.checkpoints.dirpath
@@ -64,33 +54,6 @@ def load_model(cfg, dict_config, wandb_id, callbacks):
     )
     return trainer, model, ckpt_path
 
-"""def load_model(cfg, dict_config, wandb_id, callbacks):
-    logger = instantiate(cfg.logger, id=wandb_id, resume="allow")
-    
-    # checkpoint from path in eval mode
-    if cfg.mode == "eval" and cfg.eval.checkpoint_path is not None:
-        checkpoint_path = cfg.eval.checkpoint_path
-        print(f"[Eval] Loading checkpoint from: {checkpoint_path}")
-        model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
-    elif cfg.mode == "train" and cfg.train.checkpoint_path is not None:
-        # checkpoint from path in train mode
-        checkpoint_path = cfg.train.checkpoint_path
-        print(f"[Train] Loading checkpoint from: {checkpoint_path}")
-        model = SitsScdModel.load_from_checkpoint(checkpoint_path, cfg=cfg.model)
-    else:
-        print("No checkpoint found, initializing new model.")
-        model = SitsScdModel(cfg.model)
-        checkpoint_path = None
-
-    trainer = instantiate(
-        cfg.trainer,
-        strategy=cfg.trainer.strategy,
-        logger=logger,
-        callbacks=callbacks,
-    )
-
-    return trainer, model, checkpoint_path """
-
 """Sets up the project directory and saves config for reproducibility."""
 def project_init(cfg):
     print("Working directory set to {}".format(os.getcwd()))
@@ -105,12 +68,15 @@ def callback_init(cfg):
     cfg.checkpoints["monitor"] = monitor + "_out"
     cfg.checkpoints["filename"] = filename + "_out"
     checkpoint_callback_out = instantiate(cfg.checkpoints)
+    cfg.checkpoints["monitor"] = monitor + "_temporal"
+    cfg.checkpoints["filename"] = filename + "_temporal"
+    checkpoint_callback_temporal = instantiate(cfg.checkpoints)
     cfg.checkpoints["monitor"] = monitor + "_in"
     cfg.checkpoints["filename"] = filename + "_in"
     checkpoint_callback_in = instantiate(cfg.checkpoints)
     progress_bar = instantiate(cfg.progress_bar)
     lr_monitor = LearningRateMonitor()
-    callbacks = [checkpoint_callback_out, checkpoint_callback_in, progress_bar, lr_monitor]
+    callbacks = [checkpoint_callback_out, checkpoint_callback_in, checkpoint_callback_temporal, progress_bar, lr_monitor]
     return callbacks
 
 """Instantiates the data module from the configuration."""

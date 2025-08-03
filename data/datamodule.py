@@ -8,29 +8,31 @@ class ImageDataModule(L.LightningDataModule):
         self,
         train_dataset,
         val_dataset_out,
+        val_dataset_temporal,
         val_dataset_in,
         test_dataset_out,
+        test_dataset_temporal,
         test_dataset_in,
         global_batch_size,
         num_workers,
-        enable_domain_shift=False, # Whether to enable domain shift
+        domain_shift_type,
         num_nodes=1,
-        num_devices=1,
+        num_devices=1
     ):
         super().__init__()
         self._builders = {
             "train": train_dataset,
             "val_out": val_dataset_out,
+            "val_temporal": val_dataset_temporal,
             "val_in": val_dataset_in,
             "test_out": test_dataset_out,
+            "test_temporal": test_dataset_temporal,
             "test_in": test_dataset_in,
         }
         self.num_workers = num_workers
         self.batch_size = global_batch_size // (num_nodes * num_devices)
-        self.enable_domain_shift = enable_domain_shift
-        self.enable_domain_shift = enable_domain_shift
+        self.domain_shift_type = domain_shift_type
         print(f"Each GPU will receive {self.batch_size} images")
-        print(f"Domain shift enabled: {self.enable_domain_shift}")
 
     @property
     def num_classes(self):
@@ -47,26 +49,40 @@ class ImageDataModule(L.LightningDataModule):
         """
         print("Stage", stage)
         start_time = time.time()
-        if stage == "fit" or stage is None:
+        if stage == "fit" or stage is None: # train and validation
             self.train_dataset = self._builders["train"]()
-            if self.enable_domain_shift:
+            if self.domain_shift_type == "spatial":
+                print("Domain shift: spatial")
                 self.val_dataset_out = self._builders["val_out"]()
-                self.val_dataset_in = self._builders["val_in"]()
+                #self.val_dataset_in = self._builders["val_in"]()
                 print(f"Train dataset size: {len(self.train_dataset)}")
                 print(f"Out-of-domain val dataset size: {len(self.val_dataset_out)}")
-                print(f"In-domain val dataset size: {len(self.val_dataset_in)}")
+                #print(f"In-domain val dataset size: {len(self.val_dataset_in)}")
+            elif self.domain_shift_type == "temporal":
+                print("Domain shift: temporal")
+                self.val_dataset_temporal = self._builders["val_temporal"]()
+                #self.val_dataset_in = self._builders["val_in"]()
+                print(f"Train dataset size: {len(self.train_dataset)}")
+                print(f"Temporal val dataset size: {len(self.val_dataset_temporal)}")
+                #print(f"In-domain val dataset size: {len(self.val_dataset_in)}")
             else:
-                self.val_dataset_in = self._builders["val_in"](force_no_domain_shift=True)
+                print("No domain shift")
+                self.val_dataset_in = self._builders["val_in"]()
                 print(f"Train dataset size: {len(self.train_dataset)}")
                 print(f"Val dataset size: {len(self.val_dataset_in)}")
-        else:
-            if self.enable_domain_shift:
+        else: # test
+            if self.domain_shift_type == "spatial":
                 self.test_dataset_out = self._builders["test_out"]()
-                self.test_dataset_in = self._builders["test_in"]()
+                #self.test_dataset_in = self._builders["test_in"]()
                 print(f"Out-of-domain test dataset size: {len(self.test_dataset_out)}")
-                print(f"In-domain test dataset size: {len(self.test_dataset_in)}")
+                #print(f"In-domain test dataset size: {len(self.test_dataset_in)}")
+            elif self.domain_shift_type == "temporal":
+                self.test_dataset_temporal = self._builders["test_temporal"]()
+                #self.test_dataset_in = self._builders["test_in"]()
+                print(f"Temporal test dataset size: {len(self.test_dataset_temporal)}")
+                #print(f"In-domain test dataset size: {len(self.test_dataset_in)}")
             else:
-                self.test_dataset_in = self._builders["test_in"](force_no_domain_shift=True)
+                self.test_dataset_in = self._builders["test_in"]()
                 print(f"Test dataset size: {len(self.test_dataset_in)}")
         end_time = time.time()
         print(f"Setup took {(end_time - start_time):.2f} seconds")
@@ -74,7 +90,7 @@ class ImageDataModule(L.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size, # Global batch size
             shuffle=True, # Data randomization
             pin_memory=False,
             drop_last=True,
@@ -83,7 +99,7 @@ class ImageDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self):
-        if self.enable_domain_shift:
+        if self.domain_shift_type == "spatial":
             return [DataLoader(
                 self.val_dataset_out,
                 batch_size=1,
@@ -91,13 +107,15 @@ class ImageDataModule(L.LightningDataModule):
                 pin_memory=False,
                 num_workers=self.num_workers,
                 collate_fn=self.val_dataset_out.collate_fn,
-            ), DataLoader(
-                self.val_dataset_in,
+            )]
+        elif self.domain_shift_type == "temporal":
+            return [DataLoader(
+                self.val_dataset_temporal,
                 batch_size=1,
                 shuffle=False,
                 pin_memory=False,
                 num_workers=self.num_workers,
-                collate_fn=self.val_dataset_in.collate_fn,
+                collate_fn=self.val_dataset_temporal.collate_fn,
             )]
         else:
             return DataLoader(
@@ -110,7 +128,7 @@ class ImageDataModule(L.LightningDataModule):
             )
 
     def test_dataloader(self):
-        if self.enable_domain_shift:
+        if self.domain_shift_type == "spatial":
             return [DataLoader(
                 self.test_dataset_out,
                 batch_size=1,
@@ -118,13 +136,15 @@ class ImageDataModule(L.LightningDataModule):
                 pin_memory=False,
                 num_workers=self.num_workers,
                 collate_fn=self.test_dataset_out.collate_fn,
-            ), DataLoader(
-                self.test_dataset_in,
+            )]
+        elif self.domain_shift_type == "temporal":
+            return [DataLoader(
+                self.test_dataset_temporal,
                 batch_size=1,
                 shuffle=False,
                 pin_memory=False,
                 num_workers=self.num_workers,
-                collate_fn=self.test_dataset_in.collate_fn,
+                collate_fn=self.test_dataset_temporal.collate_fn,
             )]
         else:
             return DataLoader(
