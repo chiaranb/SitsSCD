@@ -206,20 +206,20 @@ def to_binary_colormap_image(array, figsize=(2.56, 2.56), dpi=100):
     buf.seek(0)
     return Image.open(buf).convert("RGB")
 
-CLASS_NAMES = ["impervi", "agricult", "forest", "wetlands", "soil", "water"]
+CLASS_NAMES = ["impervi", "agricult", "forest", "wetlands", "soil", "water", "unknown"]
 CLASS_COLORS = np.array([
-    [64, 64, 64],  # impervi (grigio)
-    [204, 204, 0],    # agricult (giallo)
-    [0, 204, 0],      # forest (verde)
-    [0, 0, 102],      # wetlands (blu)
-    [153, 76, 0],    # soil (marrone)
-    [51, 51, 255],  # water (azzurro chiaro)
+    [64, 64, 64],  # impervi (gray)
+    [204, 204, 0],    # agricult (yellow)
+    [0, 204, 0],      # forest (green)
+    [0, 0, 102],      # wetlands (blue)
+    [153, 76, 0],    # soil (brown)
+    [51, 51, 255],  # water (light blue)
+    [0, 0, 0]   # unknown (black)
 ], dtype=np.uint8)
 
 def to_class_colormap_image(img_array):
     """
-    Converte una mappa di classi (H, W) in RGB usando colori predefiniti.
-    img_array: array numpy con valori interi 0..len(CLASS_COLORS)-1
+    Convert a 2D or 3D numpy array of class indices to a colored image using predefined class colors.
     """
     if img_array.ndim == 3 and img_array.shape[0] == 1:  
         img_array = img_array.squeeze(0)  # (1, H, W) → (H, W)
