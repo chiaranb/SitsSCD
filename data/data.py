@@ -21,7 +21,6 @@ class SitsDataset(Dataset):
                  img_size,
                  true_size,
                  train_length,
-                 #force_no_domain_shift=False # Enable to force no domain shift for val/test
                  ): 
         super(SitsDataset, self).__init__()
         self.path = path
@@ -198,7 +197,6 @@ class Muds(SitsDataset):
             path (str): path to the dataset
             split (str): split to use (train, val, test)
             domain_shift (bool): if val/test, whether we are in a domain shift setting or not
-            force_no_domain_shift (bool): if True, forces no domain shift for val/test
         """
         # Load the ground truth labels: 0 if there is the timestep, 1 if there is no timestep
         month_list = [(((self.gt[k].float() - 2) ** 2).mean((1, 2)) == 0).int().numpy().tolist() for k in range(self.gt.shape[0])]
@@ -226,31 +224,28 @@ class DynamicEarthNet(SitsDataset):
             self,
             path,
             split="train",
-            domain_shift=False,
+            domain_shift_type="none",
             num_channels=4,
             num_classes=7,
             img_size=128,
             true_size=1024,
             train_length=6,
-            date_aug_range=2,
-            force_no_domain_shift=False,  
+            date_aug_range=2
     ):
 
         super(DynamicEarthNet, self).__init__(path=path,
                                               split=split,
-                                              domain_shift=domain_shift,
+                                              domain_shift_type=domain_shift_type,
                                               num_channels=num_channels,
                                               num_classes=num_classes,
                                               img_size=img_size,
                                               true_size=true_size,
-                                              train_length=train_length,
-                                              force_no_domain_shift=force_no_domain_shift)  
+                                              train_length=train_length)  
         """Initializes the dataset.
         Args:
             path (str): path to the dataset
             split (str): split to use (train, val, test)
             domain_shift (bool): if val/test, whether we are in a domain shift setting or not
-            force_no_domain_shift (bool): if True, forces no domain shift for val/test
         """
         self.date_aug_range = date_aug_range
         self.monthly_dates = get_monthly_dates_dict()
@@ -261,7 +256,7 @@ class DynamicEarthNet(SitsDataset):
 
     """Loads two images (RGB and Infrared) for each month of the given sits_id."""
     def load_data(self, sits_number, sits_id, months, curr_sits_path):
-        data = torch.zeros((len(months), self.num_channels, self.true_size, self.true_size), dtype=torch.float16)
+        data = torch.zeros((len(months), self.num_channels, self.true_size, self.true_size), dtype=torch.float16) # [12, channels, 1024, 1024]
         days = [self.random_date_augmentation(month) for month in months]
         #print(days)
         name_rgb = [f'{sits_id}_{day}_rgb.jpeg' for day in days]

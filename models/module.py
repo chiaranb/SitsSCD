@@ -8,6 +8,7 @@ import wandb
 from PIL import Image
 import io
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 class SitsScdModel(L.LightningModule):
     def __init__(self, cfg):
@@ -18,7 +19,7 @@ class SitsScdModel(L.LightningModule):
         self.ignore_index = self.loss.ignore_index
         self.val_metrics = instantiate(cfg.val_metrics)
         self.test_metrics = instantiate(cfg.test_metrics)
-        self.dataset = self.cfg.dataset
+        self.dataset = self.cfg.dataset.name
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
@@ -60,7 +61,8 @@ class SitsScdModel(L.LightningModule):
         pred = self.model(batch)
         pred["pred"] = torch.argmax(pred["logits"], dim=2)
 
-        self.save_predictions(pred["pred"], batch_idx)
+        # Enable to save predictions local
+        #self.save_predictions(pred["pred"], batch_idx)
         self.test_metrics.update(pred["pred"], batch["gt"])
         self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset)
     
@@ -103,62 +105,80 @@ class SitsScdModel(L.LightningModule):
         for name, value in metrics.items():
             self.log(f"{prefix}/{name}", value, sync_dist=True, on_step=False, on_epoch=True)
 
-    def log_wandb_images(self, preds, gt, batch_idx, data, prefix="test", dataset_type="muds"):
-        if prefix in ("test", "val"):
-            preds_np = preds[0].cpu().numpy()
-        gt_np = gt[0].cpu().numpy() if gt is not None else None
-        input_np = data[0].cpu().numpy() if data is not None else None
+    def log_wandb_images(self, preds, gt, batch_idx, data, prefix="test", dataset_type="Muds"):
+        # Extract numpy arrays
+        preds_np = preds[0].cpu().numpy() if prefix in ("test", "val") else None
+        gt_np = gt[0].cpu().numpy() if (gt is not None and len(gt) > 0) else None
 
-        if input_np is not None:
-            input_images = {}
-            for t in range(input_np.shape[0]):
-                img = np.moveaxis(input_np[t], 0, -1)  # C,H,W → H,W,C
-                img_vis = (img - img.min()) / (img.max() - img.min() + 1e-5)
-                img_vis = (img_vis * 255).astype(np.uint8)
-                input_images[f"{prefix}_input/t{t:02d}"] = wandb.Image(
-                    img_vis, caption=f"Batch {batch_idx}"
-                )
+        # First batch inputs
+        input_np = data[0].cpu().numpy()  # shape [T, C, H, W]
+
+        # For DynamicEarthNet: split RGB and IR channels
+        input_rgb = None
+        input_ir = None
+        if dataset_type == "DynamicEarthNet":
+            input_rgb = input_np[:, :3, :, :]  # [T, 3, H, W]
+            input_ir = input_np[:, 3:, :, :]   # [T, 1, H, W]
+        else:
+            input_rgb = input_np  # MUDS is already RGB only
+
+        # Helper function: normalize image to 0–255 uint8
+        def normalize_img(img):
+            img = np.moveaxis(img, 0, -1)  # C,H,W → H,W,C
+            img_vis = (img - img.min()) / (img.max() - img.min() + 1e-5)
+            return (img_vis * 255).astype(np.uint8)
+
+        # Format image based on dataset type
+        def format_image(img_array):
+            if dataset_type == "Muds":
+                return to_binary_colormap_image(img_array)
+            elif dataset_type == "DynamicEarthNet":
+                return to_class_colormap_image(img_array)
+            return None
+
+        # --- Log RGB input ---
+        if input_rgb is not None:
+            input_images = {
+                f"{prefix}_input/t{t:02d}": wandb.Image(normalize_img(input_rgb[t]), caption=f"Batch {batch_idx}")
+                for t in range(input_rgb.shape[0])
+            }
             wandb.log(input_images)
 
-        # Helper function to format images based on dataset type
-        def format_image(img_array):
-            if dataset_type == "muds":
-                return to_binary_colormap_image(img_array)
-            elif dataset_type == "dynamicearthnet":
-                img_vis = (img_array - img_array.min()) / (img_array.max() - img_array.min() + 1e-5)
-                return (img_vis * 255).astype(np.uint8)
+        # --- Log IR input (only for DynamicEarthNet) ---
+        if input_ir is not None:
+            input_ir_images = {
+                f"{prefix}_input_infrared/t{t:02d}": wandb.Image(normalize_img(np.repeat(input_ir[t], 3, axis=0)),
+                                                                caption=f"Batch {batch_idx}")
+                for t in range(input_ir.shape[0])
+            }
+            wandb.log(input_ir_images)
 
-
-        # Log pred
-        if prefix in ("test", "val"):
-            pred_images = {}
-            for t in range(preds_np.shape[0]):
-                pred_images[f"{prefix}_pred/t{t:02d}"] = wandb.Image(
-                    format_image(preds_np[t]), caption=f"Batch {batch_idx}"
-                )
+        # --- Log predictions ---
+        if preds_np is not None:
+            pred_images = {
+                f"{prefix}_pred/t{t:02d}": wandb.Image(format_image(preds_np[t]), caption=f"Batch {batch_idx}")
+                for t in range(preds_np.shape[0])
+            }
             wandb.log(pred_images)
 
-        # Log gt
+        # --- Log ground truth ---
         if gt_np is not None:
             gt_images = {}
             for t in range(gt_np.shape[0]):
-                gt_images[f"{prefix}_gt/t{t:02d}"] = wandb.Image(
-                    format_image(gt_np[t]), caption=f"Batch {batch_idx}"
-                )
-            wandb.log(gt_images)
+                img_fmt = format_image(gt_np[t])
+                if img_fmt is not None:
+                    gt_images[f"{prefix}_gt/t{t:02d}"] = wandb.Image(
+                        img_fmt, caption=f"Batch {batch_idx}"
+                    )
+            if gt_images:
+                wandb.log(gt_images)
 
-        # Log temporal stats 
-        if prefix in ("test", "val"):
+        # --- Log temporal stats ---
+        if preds_np is not None:
             temporal_images = {
-                f"{prefix}_temporal/mean": wandb.Image(
-                    format_image(np.mean(preds_np, axis=0)), caption=f"Batch {batch_idx}"
-                ),
-                f"{prefix}_temporal/std": wandb.Image(
-                    format_image(np.std(preds_np, axis=0)), caption=f"Batch {batch_idx}"
-                ),
-                f"{prefix}_temporal/change": wandb.Image(
-                    format_image(np.max(preds_np, axis=0) - np.min(preds_np, axis=0)), caption=f"Batch {batch_idx}"
-                )
+                f"{prefix}_temporal/mean": wandb.Image(format_image(np.mean(preds_np, axis=0)), caption=f"Batch {batch_idx}"),
+                f"{prefix}_temporal/std": wandb.Image(format_image(np.std(preds_np, axis=0)), caption=f"Batch {batch_idx}"),
+                f"{prefix}_temporal/change": wandb.Image(format_image(preds_np[-1] - preds_np[0]), caption=f"Batch {batch_idx}")
             }
             wandb.log(temporal_images)
 
@@ -185,3 +205,23 @@ def to_binary_colormap_image(array, figsize=(2.56, 2.56), dpi=100):
     plt.close(fig)
     buf.seek(0)
     return Image.open(buf).convert("RGB")
+
+CLASS_NAMES = ["impervi", "agricult", "forest", "wetlands", "soil", "water"]
+CLASS_COLORS = np.array([
+    [64, 64, 64],  # impervi (grigio)
+    [204, 204, 0],    # agricult (giallo)
+    [0, 204, 0],      # forest (verde)
+    [0, 0, 102],      # wetlands (blu)
+    [153, 76, 0],    # soil (marrone)
+    [51, 51, 255],  # water (azzurro chiaro)
+], dtype=np.uint8)
+
+def to_class_colormap_image(img_array):
+    """
+    Converte una mappa di classi (H, W) in RGB usando colori predefiniti.
+    img_array: array numpy con valori interi 0..len(CLASS_COLORS)-1
+    """
+    if img_array.ndim == 3 and img_array.shape[0] == 1:  
+        img_array = img_array.squeeze(0)  # (1, H, W) → (H, W)
+    colored = CLASS_COLORS[img_array.astype(int)]
+    return colored
