@@ -98,7 +98,6 @@ class SitsDataset(Dataset):
             patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size)
             months = list(range(12, 24))  # 12 months (2019)
         else: # validation/test with no domain shift
-            print("Domain shift: none val/test (get_item)")
             # Uses only 2 corner patches per location
             num_patches_per_sits = 2
             sits_number = i // num_patches_per_sits

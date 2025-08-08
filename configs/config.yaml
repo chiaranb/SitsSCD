@@ -1,11 +1,13 @@
 defaults:
   - model: baseline
-  - computer: cpu
+  - computer: gpu
   - dataset: muds
   - _self_
 
 model:
   output_dir: outputs/
+
+  dataset: ${dataset}
 
   val_metrics:
     _target_: metrics.scd_metrics.SCDMetric
@@ -18,6 +20,10 @@ model:
     num_classes: ${dataset.num_classes}
     class_names: ${dataset.class_names}
     ignore_index: ${dataset.ignore_index}
+  
+  logging:
+    train_image_interval: 100  # Log training images every 100 batches
+    val_image_interval: 10     # Log validation images every 10 batches
 
 datamodule:
   _target_: data.datamodule.ImageDataModule
@@ -53,7 +59,7 @@ logger:
   save_dir: ${root_dir}
   name: ${experiment_name}
   project: sitsscd
-  log_model: False
+  log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
 
@@ -67,6 +73,15 @@ checkpoints:
   every_n_epochs: 1
   mode: max
   enable_version_counter: False
+
+checkpoints_all:
+  _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  dirpath: ${root_dir}/checkpoints/${experiment_name}/all_epochs
+  filename: 'epoch_{epoch:02d}_ckpt'
+  save_top_k: -1
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+  monitor: null
   
 progress_bar:
   _target_: pytorch_lightning.callbacks.TQDMProgressBar

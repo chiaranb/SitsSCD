@@ -4,6 +4,7 @@ num_channels: 4
 num_classes: 6
 ignore_index: 6
 class_names: ["impervi", "agricult", "forest", "wetlands", "soil", "water"]
+domain_shift_type: none # Options: none, spatial, temporal
 
 train_dataset:
   _partial_: true
@@ -12,31 +13,46 @@ train_dataset:
   split: train
   train_length: 12
   date_aug_range: 2
+  domain_shift_type: ${dataset.domain_shift_type}
 
 val_dataset_out:
   _partial_: true
   _target_: data.data.DynamicEarthNet
   path: ${data_dir}/DynamicEarthNet/
   split: val
-  domain_shift: true
+  domain_shift_type: spatial
+
+val_dataset_temporal:
+  _partial_: true
+  _target_: data.data.DynamicEarthNet 
+  path: ${data_dir}/DynamicEarthNet/
+  split: val
+  domain_shift_type: temporal
 
 val_dataset_in:
   _partial_: true
   _target_: data.data.DynamicEarthNet
   path: ${data_dir}/DynamicEarthNet/
   split: val
-  domain_shift: false
+  domain_shift_type: none
 
 test_dataset_out:
   _partial_: true
   _target_: data.data.DynamicEarthNet
   path: ${data_dir}/DynamicEarthNet/
   split: test
-  domain_shift: true
+  domain_shift_type: spatial
+
+test_dataset_temporal:
+  _partial_: true
+  _target_: data.data.DynamicEarthNet
+  path: ${data_dir}/DynamicEarthNet/
+  split: test
+  domain_shift_type: temporal
 
 test_dataset_in:
   _partial_: true
   _target_: data.data.DynamicEarthNet
   path: ${data_dir}/DynamicEarthNet/
   split: test
-  domain_shift: false
+  domain_shift_type: none

@@ -65,18 +65,15 @@ def project_init(cfg):
 def callback_init(cfg):
     monitor = cfg.checkpoints["monitor"]
     filename = cfg.checkpoints["filename"]
-    cfg.checkpoints["monitor"] = monitor + "_out"
-    cfg.checkpoints["filename"] = filename + "_out"
-    checkpoint_callback_out = instantiate(cfg.checkpoints)
-    cfg.checkpoints["monitor"] = monitor + "_temporal"
-    cfg.checkpoints["filename"] = filename + "_temporal"
-    checkpoint_callback_temporal = instantiate(cfg.checkpoints)
-    cfg.checkpoints["monitor"] = monitor + "_in"
-    cfg.checkpoints["filename"] = filename + "_in"
-    checkpoint_callback_in = instantiate(cfg.checkpoints)
+    cfg.checkpoints["monitor"] = monitor
+    cfg.checkpoints["filename"] = filename
+    checkpoint_callback = instantiate(cfg.checkpoints)
+    filename = cfg.checkpoints_all["filename"]
+    cfg.checkpoints_all["filename"] = filename + "_all"
+    checkpoint_callback_all = instantiate(cfg.checkpoints_all)
     progress_bar = instantiate(cfg.progress_bar)
     lr_monitor = LearningRateMonitor()
-    callbacks = [checkpoint_callback_out, checkpoint_callback_in, checkpoint_callback_temporal, progress_bar, lr_monitor]
+    callbacks = [checkpoint_callback, checkpoint_callback_all, progress_bar, lr_monitor]
     return callbacks
 
 """Instantiates the data module from the configuration."""
