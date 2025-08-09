@@ -12,5 +12,5 @@ instance:
   d_k: 4
   pad_value: 0
   padding_mode: "reflect"
-  T: 1000
-  offset: 10
+  T: 730
+  offset: 0

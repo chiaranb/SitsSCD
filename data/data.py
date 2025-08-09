@@ -71,36 +71,47 @@ class SitsDataset(Dataset):
                 num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
                 sits_number = i // num_patches_per_sits
                 patch_loc_i, patch_loc_j = None, None
-                months = self.get_random_months(sits_number)  # 12 months
+                months = self.get_random_months(sits_number)  # 12 months (12 sampled out of 24)
             elif self.domain_shift_type == "temporal":
                 # Uses 60 patches per location, excluding the 4 border patches
                 num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
                 sits_number = i // num_patches_per_sits
                 patch_loc_i, patch_loc_j = None, None
-                months = list(range(12)) # 12 months (2018)
+                months = self.get_random_months(sits_number)  # 6 months (2018) (6 sampled out of 12)
         elif self.domain_shift_type == "spatial": # validation/test
             # Uses all patches 64 per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2  
             sits_number = i // num_patches_per_sits
-            #print(f"Using {num_patches_per_sits} patches per sits for training")
-            #print(f"Current sits number: {sits_number}, i: {i}")
-            patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size)
-            patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size)
-            #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            print(f"Current sits number: {sits_number}, i: {i}")
+            patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size) # row
+            patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size) # column
+            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             months = list(range(24))
+            #print(f"Using {num_patches_per_sits} patches per sits for validation/test (spatial)")
         elif self.domain_shift_type == "temporal": # validation/test 
             # Uses 32 patches per location
-            num_patches_per_sits = (self.true_size // self.img_size) ** 2 // 2
+            num_patches_per_sits = (self.true_size // self.img_size) ** 2 // 2 # 32 patches
+
             sits_number = i // num_patches_per_sits
-            # TODO: Check the patch location logic
-            patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size)
-            patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size)
+
+            if self.split == "val":
+                patch_index = i % num_patches_per_sits
+            elif self.split == "test":
+                patch_index = (i % num_patches_per_sits) + num_patches_per_sits  # offset 32
+            else:
+                raise ValueError(f"Unexpected split {self.split} for temporal domain shift")
+
+            patch_loc_i = patch_index // (self.true_size // self.img_size)
+            patch_loc_j = patch_index % (self.true_size // self.img_size)
             months = list(range(12, 24))  # 12 months (2019)
+            print(f"Current sits number: {sits_number}, i: {i}")
+            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            #print(f"Using {num_patches_per_sits} patches per sits for validation/test (temporal)")
         else: # validation/test with no domain shift
             # Uses only 2 corner patches per location
             num_patches_per_sits = 2
             sits_number = i // num_patches_per_sits
-            #print(f"Using {num_patches_per_sits} patches per sits for training")
+            #print(f"Using {num_patches_per_sits} patches per sits for validation/test (none)")
             #print(f"Current sits number: {sits_number}, i: {i}")
             patch_loc_i, patch_loc_j = self.get_loc_per_split(i % num_patches_per_sits)
             #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
@@ -160,9 +171,15 @@ class SitsDataset(Dataset):
     
     """Returns a list of months for the given sits_number, shuffled and limited to train_length."""
     def get_random_months(self, sits_number):
-        months = self.month_list[sits_number]
-        random.shuffle(months)
-        months = sorted(months[:self.train_length])
+        if self.domain_shift_type == "none" or self.domain_shift_type == "spatial":
+            months = self.month_list[sits_number]
+            random.shuffle(months)
+            months = sorted(months[:self.train_length])
+        elif self.domain_shift_type == "temporal":
+            # Uses 6 random months from 2018
+            months = self.month_list[sits_number][:12]
+            random.shuffle(months)
+            months = sorted(months[:self.train_length])
         return months
 
     def load_data(self, sits_number, sits_id, months, curr_sits_path):

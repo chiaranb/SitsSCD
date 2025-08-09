@@ -73,7 +73,8 @@ def callback_init(cfg):
     checkpoint_callback_all = instantiate(cfg.checkpoints_all)
     progress_bar = instantiate(cfg.progress_bar)
     lr_monitor = LearningRateMonitor()
-    callbacks = [checkpoint_callback, checkpoint_callback_all, progress_bar, lr_monitor]
+    early_stopping = instantiate(cfg.early_stopping)
+    callbacks = [checkpoint_callback, checkpoint_callback_all, progress_bar, lr_monitor, early_stopping]
     return callbacks
 
 """Instantiates the data module from the configuration."""
