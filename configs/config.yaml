@@ -47,8 +47,8 @@ trainer:
   strategy: ${computer.strategy}
   num_nodes: ${computer.num_nodes}
   precision: ${computer.precision}
-  max_epochs: 1
-  check_val_every_n_epoch: 1
+  max_epochs: 50
+  check_val_every_n_epoch: 5
   num_sanity_val_steps: 0 # No sanity check for validation
 
 eval:
@@ -56,9 +56,9 @@ eval:
 
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
-  save_dir: ${root_dir}
+  #save_dir: ${root_dir} # Save locally wandb folder
   name: ${experiment_name}
-  project: sitsscd
+  project: sitsscd_v2
   log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
