@@ -69,8 +69,10 @@ class SCDMetric(Metric):
         conf_mat = self.conf_matrix
         conf_mat_change = self.conf_matrix_change
         conf_mat_sc = self.conf_matrix_sc
+        
         # Mean Intersection over Union (mIoU) and per-class IoU
         miou, per_class_iou = compute_miou(conf_mat)
+        
         # Binary Change Score (bc), Semantic Change Score (sc), and Semantic Change Segmentation Score (scs)
         sc, _ = compute_miou(conf_mat_sc)
         bc = np.divide(conf_mat_change[1, 1], conf_mat_change.sum() - conf_mat_change[0, 0],
@@ -87,7 +89,11 @@ class SCDMetric(Metric):
             "bc": bc,
             "sc": sc,
             "scs": scs,
+            "confusion_matrix": conf_mat.copy(),
+            "confusion_matrix_change": conf_mat_change.copy(),
+            "confusion_matrix_sc": conf_mat_sc.copy()
         }
+        
         for class_id, class_name in enumerate(self.class_names):
             output[class_name] = per_class_iou[class_id]
         # Reset confusion matrices for the next computation

@@ -22,8 +22,8 @@ model:
     ignore_index: ${dataset.ignore_index}
   
   logging:
-    train_image_interval: 100  # Log training images every 100 batches
-    val_image_interval: 10     # Log validation images every 10 batches
+    train_image_interval: 10  # Log training images every 100 batches
+    val_image_interval: 1     # Log validation images every 1 batches
 
 datamodule:
   _target_: data.datamodule.ImageDataModule
@@ -39,6 +39,7 @@ datamodule:
   num_workers: ${computer.num_workers}
   num_nodes: ${computer.num_nodes}
   num_devices: ${computer.devices}
+  streaming: true
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -77,7 +78,6 @@ checkpoints:
 checkpoints_all:
   _target_: pytorch_lightning.callbacks.ModelCheckpoint
   dirpath: ${root_dir}/checkpoints/${experiment_name}/all_epochs
-  filename: 'epoch_{epoch:02d}_ckpt'
   save_top_k: -1
   every_n_epochs: 1
   save_on_train_epoch_end: True
