@@ -9,6 +9,8 @@ from PIL import Image
 import io
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import seaborn as sns
+
 
 class SitsScdModel(L.LightningModule):
     def __init__(self, cfg):
@@ -56,22 +58,35 @@ class SitsScdModel(L.LightningModule):
         self.log_metrics(computed, prefix="val")
 
         if self.global_rank == 0:
-            # --- Log confusion matrix (all classes) ---
+            # Full-class confusion matrix
             if "confusion_matrix" in computed:
                 cm = computed["confusion_matrix"]
+                fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix")
+                wandb.log({"val/confusion_matrix_image": wandb.Image(fig)})
+                plt.close(fig)
+                
                 table = confusion_matrix_to_wandb_table(cm, self.val_metrics.class_names)
-                wandb.log({"val/confusion_matrix": table})
+                wandb.log({"val/confusion_matrix_table": table})
 
-            # --- Log binary change detection confusion matrix ---
+            # Binary change detection confusion matrix
             if "confusion_matrix_change" in computed:
                 cm_change = computed["confusion_matrix_change"]
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix")
+                wandb.log({"val/confusion_matrix_change_image": wandb.Image(fig_change)})
+                plt.close(fig_change)
+
                 table_change = confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
-                wandb.log({"val/confusion_matrix_change": table_change})
-                
+                wandb.log({"val/confusion_matrix_change_table": table_change})
+
+            # Semantic change confusion matrix
             if "confusion_matrix_sc" in computed:
                 cm_sc = computed["confusion_matrix_sc"]
+                fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix")
+                wandb.log({"val/confusion_matrix_sc_image": wandb.Image(fig_sc)})
+                plt.close(fig_sc)
+
                 table_sc = confusion_matrix_to_wandb_table(cm_sc, self.val_metrics.class_names)
-                wandb.log({"val/confusion_matrix_semantic_change": table_sc})
+                wandb.log({"val/confusion_matrix_sc_table": table_sc})
 
         self.val_metrics.reset()
     
@@ -87,26 +102,32 @@ class SitsScdModel(L.LightningModule):
     
     def on_test_epoch_end(self):
         metrics = self.test_metrics.compute()
-        print("\n=== TEST EPOCH END ===")
         self.log_metrics(metrics, prefix="test")
 
         if self.global_rank == 0:
             if "confusion_matrix" in metrics:
                 cm = metrics["confusion_matrix"]
-                table = confusion_matrix_to_wandb_table(cm, self.test_metrics.class_names)
-                wandb.log({"test/confusion_matrix": table})
+                wandb.log({
+                    "test/confusion_matrix_image": wandb.Image(plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix")),
+                    "test/confusion_matrix_table": confusion_matrix_to_wandb_table(cm, self.test_metrics.class_names)
+                })
 
             if "confusion_matrix_change" in metrics:
                 cm_change = metrics["confusion_matrix_change"]
-                table_change = confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
-                wandb.log({"test/confusion_matrix_change": table_change})
+                wandb.log({
+                    "test/confusion_matrix_change_image": wandb.Image(plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix")),
+                    "test/confusion_matrix_change_table": confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
+                })
 
             if "confusion_matrix_sc" in metrics:
                 cm_sc = metrics["confusion_matrix_sc"]
-                table_sc = confusion_matrix_to_wandb_table(cm_sc, self.test_metrics.class_names)
-                wandb.log({"test/confusion_matrix_semantic_change": table_sc})
+                wandb.log({
+                    "test/confusion_matrix_sc_image": wandb.Image(plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix")),
+                    "test/confusion_matrix_sc_table": confusion_matrix_to_wandb_table(cm_sc, self.test_metrics.class_names)
+                })
 
         self.test_metrics.reset()
+
 
     def configure_optimizers(self):
         if self.cfg.optimizer.exclude_ln_and_biases_from_weight_decay:
@@ -273,3 +294,14 @@ def confusion_matrix_to_wandb_table(cm, class_names):
         for j in range(n_classes):
             table.add_data(class_names[i], class_names[j], int(cm[i, j]))
     return table
+
+def plot_confusion_matrix(cm, class_names, title="Confusion Matrix"):
+    """Return a matplotlib figure of a confusion matrix heatmap."""
+    fig, ax = plt.subplots(figsize=(6, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=class_names, yticklabels=class_names, ax=ax)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Ground Truth")
+    ax.set_title(title)
+    plt.tight_layout()
+    return fig

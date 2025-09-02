@@ -39,7 +39,6 @@ datamodule:
   num_workers: ${computer.num_workers}
   num_nodes: ${computer.num_nodes}
   num_devices: ${computer.devices}
-  streaming: true
 
 trainer:
   _target_: pytorch_lightning.Trainer
