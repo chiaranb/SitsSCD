@@ -62,31 +62,31 @@ class SitsScdModel(L.LightningModule):
             if "confusion_matrix" in computed:
                 cm = computed["confusion_matrix"]
                 fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix")
-                wandb.log({"val/confusion_matrix_image": wandb.Image(fig)})
+                wandb.log({
+                    "val/confusion_matrix_image": wandb.Image(fig),
+                    "val/confusion_matrix_table": confusion_matrix_to_wandb_table(cm, self.val_metrics.class_names)
+                })
                 plt.close(fig)
-                
-                table = confusion_matrix_to_wandb_table(cm, self.val_metrics.class_names)
-                wandb.log({"val/confusion_matrix_table": table})
 
             # Binary change detection confusion matrix
             if "confusion_matrix_change" in computed:
                 cm_change = computed["confusion_matrix_change"]
                 fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix")
-                wandb.log({"val/confusion_matrix_change_image": wandb.Image(fig_change)})
+                wandb.log({
+                    "val/confusion_matrix_change_image": wandb.Image(fig_change),
+                    "val/confusion_matrix_change_table": confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
+                })
                 plt.close(fig_change)
-
-                table_change = confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
-                wandb.log({"val/confusion_matrix_change_table": table_change})
 
             # Semantic change confusion matrix
             if "confusion_matrix_sc" in computed:
                 cm_sc = computed["confusion_matrix_sc"]
                 fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix")
-                wandb.log({"val/confusion_matrix_sc_image": wandb.Image(fig_sc)})
+                wandb.log({
+                    "val/confusion_matrix_sc_image": wandb.Image(fig_sc),
+                    "val/confusion_matrix_sc_table": confusion_matrix_to_wandb_table(cm_sc, self.val_metrics.class_names)
+                })
                 plt.close(fig_sc)
-
-                table_sc = confusion_matrix_to_wandb_table(cm_sc, self.val_metrics.class_names)
-                wandb.log({"val/confusion_matrix_sc_table": table_sc})
 
         self.val_metrics.reset()
     
@@ -102,29 +102,38 @@ class SitsScdModel(L.LightningModule):
     
     def on_test_epoch_end(self):
         metrics = self.test_metrics.compute()
+        
+        # Log scalar metrics
         self.log_metrics(metrics, prefix="test")
 
         if self.global_rank == 0:
+            # Confusion matrices: log as images and tables
             if "confusion_matrix" in metrics:
                 cm = metrics["confusion_matrix"]
+                fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix")
                 wandb.log({
-                    "test/confusion_matrix_image": wandb.Image(plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix")),
+                    "test/confusion_matrix_image": wandb.Image(fig),
                     "test/confusion_matrix_table": confusion_matrix_to_wandb_table(cm, self.test_metrics.class_names)
                 })
+                plt.close(fig)
 
             if "confusion_matrix_change" in metrics:
                 cm_change = metrics["confusion_matrix_change"]
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix")
                 wandb.log({
-                    "test/confusion_matrix_change_image": wandb.Image(plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix")),
+                    "test/confusion_matrix_change_image": wandb.Image(fig_change),
                     "test/confusion_matrix_change_table": confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
                 })
+                plt.close(fig_change)
 
             if "confusion_matrix_sc" in metrics:
                 cm_sc = metrics["confusion_matrix_sc"]
+                fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix")
                 wandb.log({
-                    "test/confusion_matrix_sc_image": wandb.Image(plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix")),
+                    "test/confusion_matrix_sc_image": wandb.Image(fig_sc),
                     "test/confusion_matrix_sc_table": confusion_matrix_to_wandb_table(cm_sc, self.test_metrics.class_names)
                 })
+                plt.close(fig_sc)
 
         self.test_metrics.reset()
 
@@ -159,8 +168,13 @@ class SitsScdModel(L.LightningModule):
             np.save(output_dir / f"sample_{batch_idx}_{i}.npy", preds[i].cpu().numpy())
 
     def log_metrics(self, metrics, prefix):
-        for name, value in metrics.items():
-            self.log(f"{prefix}/{name}", value, sync_dist=True, on_step=False, on_epoch=True)
+      for name, value in metrics.items():
+          # Only log scalars with self.log
+          if isinstance(value, (int, float, torch.Tensor, np.floating, np.integer)):
+              self.log(f"{prefix}/{name}", value, sync_dist=True, on_step=False, on_epoch=True)
+          else:
+              # Skip non-scalars (like confusion matrices) 
+              print(f"Skipping {prefix}/{name} from self.log() because it is type {type(value)}")
 
     def log_wandb_images(self, preds, gt, batch_idx, data, prefix="test", dataset_type="Muds"):
         # Extract numpy arrays
@@ -296,12 +310,21 @@ def confusion_matrix_to_wandb_table(cm, class_names):
     return table
 
 def plot_confusion_matrix(cm, class_names, title="Confusion Matrix"):
-    """Return a matplotlib figure of a confusion matrix heatmap."""
-    fig, ax = plt.subplots(figsize=(6, 6))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=class_names, yticklabels=class_names, ax=ax)
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("Ground Truth")
-    ax.set_title(title)
-    plt.tight_layout()
+    plt.figure(figsize=(8, 6))
+
+    # Convert to numpy array if it's a tensor
+    if hasattr(cm, 'cpu'):
+        cm = cm.cpu().numpy()
+    
+    # Always use float formatting to avoid format errors
+    # This works for both int and float values
+    fmt = ".0f"
+
+    #print(f"CM shape: {cm.shape}, dtype: {cm.dtype}, sample values: {cm.flat[:5]}")
+    sns.heatmap(cm, annot=True, fmt=fmt, cmap="Blues",
+                xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title(title)
+    fig = plt.gcf()
     return fig

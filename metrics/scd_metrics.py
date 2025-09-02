@@ -89,6 +89,9 @@ class SCDMetric(Metric):
             "bc": bc,
             "sc": sc,
             "scs": scs,
+            "confusion_matrix": conf_mat.copy(),
+            "confusion_matrix_change": conf_mat_change.copy(),
+            "confusion_matrix_sc": conf_mat_sc.copy()
         }
         
         for class_id, class_name in enumerate(self.class_names):
