@@ -40,18 +40,18 @@ class SitsDataset(Dataset):
     '''Return the number of patches, each image is split into patches of size img_size x img_size (128x128).'''
     def __len__(self):
         if self.split == 'train':
-            #print(f"Number of training samples: {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4)}")
-            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4) # self.sits_ids = 20 (20x60)
+            #print(f"Number of training samples: {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 12)}") #1040
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 12) 
         # val/test splits
         elif self.domain_shift_type == "spatial":
             #print(f"Number of validation/test samples (spatial): {len(self.sits_ids) * (self.true_size // self.img_size) ** 2}")
-            return len(self.sits_ids) * (self.true_size // self.img_size) ** 2 # self.sits_ids = 5 (5x64)
+            return len(self.sits_ids) * (self.true_size // self.img_size) ** 2
         elif self.domain_shift_type == "temporal":
             #print(f"Number of validation/test samples (temporal): {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) // 2}")
-            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) // 2 # self.sits_ids = 20 (20x32)
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) // 2 
         else:
-            #print(f"Number of validation/test samples (none): {len(self.sits_ids) * 2}")
-            return len(self.sits_ids) * 2 # self.sits_ids = 20 (20x2)
+            print(f"Number of validation/test samples (none): {len(self.sits_ids) * 6}") #120
+            return len(self.sits_ids) * 6 # self.sits_ids = 20 (20x2)
     
     def __getitem__(self, i):
         """Returns an item from the dataset.
@@ -68,8 +68,10 @@ class SitsDataset(Dataset):
         if self.split == 'train':
             if self.domain_shift_type == "none" or self.domain_shift_type == "spatial":
                 # Uses 60 patches per location, excluding the 4 border patches
-                num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
+                num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 12 #52
+                print("Number of patches per sits: ", num_patches_per_sits)
                 sits_number = i // num_patches_per_sits
+                print("Sits number: ", sits_number)
                 patch_loc_i, patch_loc_j = None, None
                 months = self.get_random_months(sits_number)  # 12 months (12 sampled out of 24)
             elif self.domain_shift_type == "temporal":
@@ -91,16 +93,13 @@ class SitsDataset(Dataset):
         elif self.domain_shift_type == "temporal": # validation/test 
             # Uses 32 patches per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2 // 2 # 32 patches
-
             sits_number = i // num_patches_per_sits
-
             if self.split == "val":
                 patch_index = i % num_patches_per_sits
             elif self.split == "test":
                 patch_index = (i % num_patches_per_sits) + num_patches_per_sits  # offset 32
             else:
                 raise ValueError(f"Unexpected split {self.split} for temporal domain shift")
-
             patch_loc_i = patch_index // (self.true_size // self.img_size)
             patch_loc_j = patch_index % (self.true_size // self.img_size)
             months = list(range(12, 24))  # 12 months (2019)
@@ -108,19 +107,18 @@ class SitsDataset(Dataset):
             print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             #print(f"Using {num_patches_per_sits} patches per sits for validation/test (temporal)")
         else: # validation/test with no domain shift
-            # Uses only 2 corner patches per location
-            num_patches_per_sits = 2
+            num_patches_per_sits = 6
             sits_number = i // num_patches_per_sits
-            #print(f"Using {num_patches_per_sits} patches per sits for validation/test (none)")
-            #print(f"Current sits number: {sits_number}, i: {i}")
-            patch_loc_i, patch_loc_j = self.get_loc_per_split(i % num_patches_per_sits)
-            #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            print(f"Current sits number: {sits_number}, i: {i}")
+            locator = PatchLocator(self.true_size, self.img_size, n_val=6, n_test=6, seed=42)
+            patch_loc_i, patch_loc_j = locator.get_loc(self.split, i)
+            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             months = list(range(24))
         sits_id = self.sits_ids[sits_number]
         curr_sits_path = join(self.image_folder, sits_id)
         gt = self.gt[sits_number, months]
         data, days = self.load_data(sits_number, sits_id, months, curr_sits_path)
-        data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j)
+        data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j) # Data augmentation
         data = self.normalize(data)
         positions = torch.tensor(days, dtype=torch.long)
         output = {"data": data, "gt": gt.long(), "positions": positions, "idx": sits_number}
@@ -165,9 +163,22 @@ class SitsDataset(Dataset):
     """Returns the location of the patches for the given split. 
     val uses bottom-right corner patches, test uses diagonal corner patches."""
     def get_loc_per_split(self, i):
-        return {'val': [self.true_size // self.img_size - 1 - i, self.true_size // self.img_size - 1 - i],
-                'test': [self.true_size // self.img_size - 1 - i, self.true_size // self.img_size - 2 + i]
-                }[self.split]
+        
+        # All possible locations
+        max_loc = self.true_size // self.img_size
+        all_locs = [(r, c) for r in range(max_loc) for c in range(max_loc)]
+        self.rng.shuffle(all_locs)
+
+        # Split half for val and half for test
+        mid = len(all_locs) // 2
+        val_locs = all_locs[:mid]
+        test_locs = all_locs[mid:]
+
+        if self.split == "val":
+            return val_locs[i % len(val_locs)]
+        elif self.split == "test":
+            return test_locs[i % len(test_locs)]
+
     
     """Returns a list of months for the given sits_number, shuffled and limited to train_length."""
     def get_random_months(self, sits_number):
@@ -186,6 +197,35 @@ class SitsDataset(Dataset):
         """Needs to be implemented in subclass."""
         data, days = None, None
         return data, days
+
+
+class PatchLocator:
+    def __init__(self, true_size, img_size, n_val=None, n_test=None, seed=42):
+
+        self.true_size = true_size
+        self.img_size = img_size
+        self.rng = random.Random(seed)
+
+        max_loc = self.true_size // self.img_size
+        all_locs = [(r, c) for r in range(max_loc) for c in range(max_loc)]
+        self.rng.shuffle(all_locs)
+
+        total_patches = len(all_locs)
+
+        if n_val is not None and n_test is None:
+            n_test = total_patches - n_val
+        elif n_val is None and n_test is not None:
+            n_val = total_patches - n_test
+
+        self.val_locs = all_locs[:n_val]
+        self.test_locs = all_locs[n_val:n_val + n_test]
+
+    def get_loc(self, split, i):
+        """Returns the location of the patch for the given split and index."""
+        if split == "val":
+            return self.val_locs[i % len(self.val_locs)]
+        elif split == "test":
+            return self.test_locs[i % len(self.test_locs)]
 
 
 class Muds(SitsDataset):

@@ -6,7 +6,6 @@ defaults:
 
 model:
   output_dir: outputs/
-
   dataset: ${dataset}
 
   val_metrics:
@@ -22,12 +21,12 @@ model:
     ignore_index: ${dataset.ignore_index}
   
   logging:
-    train_image_interval: 10  # Log training images every 100 batches
-    val_image_interval: 1     # Log validation images every 1 batches
+    train_image_interval: 10
+    val_image_interval: 1
 
 datamodule:
   _target_: data.datamodule.ImageDataModule
-  domain_shift_type: ${dataset.domain_shift_type} # Added to handle domain shift
+  domain_shift_type: ${domain_shift_type}   
   train_dataset: ${dataset.train_dataset}
   val_dataset_out: ${dataset.val_dataset_out}
   val_dataset_temporal: ${dataset.val_dataset_temporal}
@@ -49,16 +48,15 @@ trainer:
   precision: ${computer.precision}
   max_epochs: 50
   check_val_every_n_epoch: 5
-  num_sanity_val_steps: 0 # No sanity check for validation
+  num_sanity_val_steps: 0
 
 eval:
   checkpoint_path: null
 
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
-  #save_dir: ${root_dir} # Save locally wandb folder
   name: ${experiment_name}
-  project: sitsscd_v2
+  project: test
   log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
@@ -96,10 +94,12 @@ progress_bar:
   refresh_rate: ${computer.progress_bar_refresh_rate}
 
 data_dir: ${root_dir}/datasets
-root_dir:  ${hydra:runtime.cwd}
+root_dir: ${hydra:runtime.cwd}
 experiment_name: ${dataset.name}_${model.name}
-mode: train # change that to eval to do the testing
+mode: train
+domain_shift_type: none   # domain shift type: none, spatial, temporal
 num_classes: ${dataset.num_classes}
+
 hydra:
   run:
     dir: outputs/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}/${experiment_name}
