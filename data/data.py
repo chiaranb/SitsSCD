@@ -50,7 +50,7 @@ class SitsDataset(Dataset):
             #print(f"Number of validation/test samples (temporal): {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) // 2}")
             return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) // 2 
         else:
-            print(f"Number of validation/test samples (none): {len(self.sits_ids) * 6}") #120
+            #print(f"Number of validation/test samples (none): {len(self.sits_ids) * 6}") #120
             return len(self.sits_ids) * 6 # self.sits_ids = 20 (20x2)
     
     def __getitem__(self, i):
@@ -69,7 +69,7 @@ class SitsDataset(Dataset):
             if self.domain_shift_type == "none" or self.domain_shift_type == "spatial":
                 # Uses 60 patches per location, excluding the 4 border patches
                 num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 12 #52
-                print("Number of patches per sits: ", num_patches_per_sits)
+                #print("Number of patches per sits: ", num_patches_per_sits)
                 sits_number = i // num_patches_per_sits
                 print("Sits number: ", sits_number)
                 patch_loc_i, patch_loc_j = None, None
@@ -143,13 +143,13 @@ class SitsDataset(Dataset):
         return gt, sits_ids
 
     def transform(self, data, gt=None, patch_loc_i=None, patch_loc_j=None):
-        if self.split == 'train':
+        if self.split == 'train': # Data augmentation only for training
             data, gt = random_crop(data, gt, self.img_size, self.true_size)
             data, gt = random_fliph(data, gt)
             data, gt = random_flipv(data, gt)
             data, gt = random_rotate(data, gt)
             data, gt = random_resize_crop(data, gt)
-        else:
+        else: # For val/test, extract the patch at the given location
             data = data[..., patch_loc_i * self.img_size: (patch_loc_i + 1) * self.img_size,
                         patch_loc_j * self.img_size: (patch_loc_j + 1) * self.img_size]
             gt = gt[..., patch_loc_i * self.img_size: (patch_loc_i + 1) * self.img_size,

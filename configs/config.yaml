@@ -55,7 +55,7 @@ eval:
 
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
-  name: ${experiment_name}
+  name: ${experiment_name}_${domain_shift_type}
   project: test
   log_model: True
   offline: False
