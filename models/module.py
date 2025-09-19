@@ -35,8 +35,16 @@ class SitsScdModel(L.LightningModule):
                 on_epoch=True,
             )
         
+        with torch.no_grad():
+            gt = batch["gt"]  # B x T x H x W
+            values, counts = torch.unique(gt, return_counts=True)
+            total_pixels = counts.sum().item()
+            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
+            for cls_id, freq in freqs.items():
+                self.log(f"train/class_{cls_id}_freq", freq, on_step=False, on_epoch=True, prog_bar=False)
+            
         # Log images at specified intervals
-        if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
+        if batch_idx % self.cfg.logging.train_image_interval == 0:
             pred["pred"] = torch.argmax(pred["logits"], dim=2)
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset)
         return loss
@@ -49,8 +57,16 @@ class SitsScdModel(L.LightningModule):
         self.val_metrics.update(pred["pred"], batch["gt"])
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
         
+        with torch.no_grad():
+            gt = batch["gt"]  # B x T x H x W
+            values, counts = torch.unique(gt, return_counts=True)
+            total_pixels = counts.sum().item()
+            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
+            for cls_id, freq in freqs.items():
+                self.log(f"val/class_{cls_id}_freq", freq, on_step=False, on_epoch=True, prog_bar=False)
+        
         # Log images at specified intervals
-        if batch_idx % self.cfg.logging.val_image_interval == 0 and self.global_rank == 0:
+        if batch_idx % self.cfg.logging.val_image_interval == 0:
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="val", dataset_type=self.dataset)
     
     def on_validation_epoch_end(self):
@@ -95,6 +111,15 @@ class SitsScdModel(L.LightningModule):
         # Enable to save predictions local
         #self.save_predictions(pred["pred"], batch_idx)
         self.test_metrics.update(pred["pred"], batch["gt"])
+        
+        with torch.no_grad():
+            gt = batch["gt"]  # B x T x H x W
+            values, counts = torch.unique(gt, return_counts=True)
+            total_pixels = counts.sum().item()
+            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
+            for cls_id, freq in freqs.items():
+                self.log(f"test/class_{cls_id}_freq", freq, on_step=False, on_epoch=True, prog_bar=False)
+        
         self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset)
     
     def on_test_epoch_end(self):
