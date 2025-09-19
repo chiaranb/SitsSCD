@@ -63,8 +63,7 @@ class SitsScdModel(L.LightningModule):
                 cm = computed["confusion_matrix"]
                 fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix")
                 wandb.log({
-                    "val/confusion_matrix_image": wandb.Image(fig),
-                    "val/confusion_matrix_table": confusion_matrix_to_wandb_table(cm, self.val_metrics.class_names)
+                    "val/confusion_matrix_image": wandb.Image(fig)
                 })
                 plt.close(fig)
 
@@ -74,7 +73,6 @@ class SitsScdModel(L.LightningModule):
                 fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix")
                 wandb.log({
                     "val/confusion_matrix_change_image": wandb.Image(fig_change),
-                    "val/confusion_matrix_change_table": confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
                 })
                 plt.close(fig_change)
 
@@ -84,7 +82,6 @@ class SitsScdModel(L.LightningModule):
                 fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix")
                 wandb.log({
                     "val/confusion_matrix_sc_image": wandb.Image(fig_sc),
-                    "val/confusion_matrix_sc_table": confusion_matrix_to_wandb_table(cm_sc, self.val_metrics.class_names)
                 })
                 plt.close(fig_sc)
 
@@ -113,7 +110,6 @@ class SitsScdModel(L.LightningModule):
                 fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix")
                 wandb.log({
                     "test/confusion_matrix_image": wandb.Image(fig),
-                    "test/confusion_matrix_table": confusion_matrix_to_wandb_table(cm, self.test_metrics.class_names)
                 })
                 plt.close(fig)
 
@@ -122,7 +118,6 @@ class SitsScdModel(L.LightningModule):
                 fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix")
                 wandb.log({
                     "test/confusion_matrix_change_image": wandb.Image(fig_change),
-                    "test/confusion_matrix_change_table": confusion_matrix_to_wandb_table(cm_change, ["No Change", "Change"])
                 })
                 plt.close(fig_change)
 
@@ -131,7 +126,6 @@ class SitsScdModel(L.LightningModule):
                 fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix")
                 wandb.log({
                     "test/confusion_matrix_sc_image": wandb.Image(fig_sc),
-                    "test/confusion_matrix_sc_table": confusion_matrix_to_wandb_table(cm_sc, self.test_metrics.class_names)
                 })
                 plt.close(fig_sc)
 

@@ -82,20 +82,50 @@ class SCDMetric(Metric):
                        out=np.zeros_like(np.diag(conf_mat)),
                        where=np.sum(conf_mat, axis=1) != 0)) * 100
         scs = 0.5 * (bc + sc)
+        # Per-class precision, recall, f1
+        per_class_precision = np.divide(np.diag(conf_mat), np.sum(conf_mat, axis=0),
+                                        out=np.zeros_like(np.diag(conf_mat), dtype=float),
+                                        where=np.sum(conf_mat, axis=0) != 0)
+
+        per_class_recall = np.divide(np.diag(conf_mat), np.sum(conf_mat, axis=1),
+                                    out=np.zeros_like(np.diag(conf_mat), dtype=float),
+                                    where=np.sum(conf_mat, axis=1) != 0)
+
+        per_class_f1 = np.divide(2 * per_class_precision * per_class_recall,
+                                per_class_precision + per_class_recall + 1e-8,
+                                out=np.zeros_like(per_class_precision, dtype=float),
+                                where=(per_class_precision + per_class_recall) != 0)
+
+        # Macro averages
+        precision_macro = np.nanmean(per_class_precision) * 100
+        recall_macro = np.nanmean(per_class_recall) * 100
+        f1_macro = np.nanmean(per_class_f1) * 100
+        
+        conf_mat_percent = (conf_mat / conf_mat.sum()) * 100
+        conf_mat_change_percent = (conf_mat_change / conf_mat_change.sum()) * 100
+        conf_mat_sc_percent = (conf_mat_sc / conf_mat_sc.sum()) * 100
+        
         output = {
             "acc": np.diag(conf_mat).sum() / conf_mat.sum() * 100,
+            "precision_macro": precision_macro,
+            "recall_macro": recall_macro,
+            "f1_macro": f1_macro,
             "macc": macc,
             "miou": miou,
             "bc": bc,
             "sc": sc,
             "scs": scs,
-            "confusion_matrix": conf_mat.copy(),
-            "confusion_matrix_change": conf_mat_change.copy(),
-            "confusion_matrix_sc": conf_mat_sc.copy()
+            "confusion_matrix": conf_mat_percent,
+            "confusion_matrix_change": conf_mat_change_percent,
+            "confusion_matrix_sc": conf_mat_sc_percent
         }
         
         for class_id, class_name in enumerate(self.class_names):
             output[class_name] = per_class_iou[class_id]
+            output[f"{class_name}_precision"] = per_class_precision[class_id] * 100
+            output[f"{class_name}_recall"] = per_class_recall[class_id] * 100
+            output[f"{class_name}_f1"] = per_class_f1[class_id] * 100
+            
         # Reset confusion matrices for the next computation
         self.conf_matrix = np.zeros((self.num_classes, self.num_classes))
         self.conf_matrix_change = np.zeros((2, 2))
