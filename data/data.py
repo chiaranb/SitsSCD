@@ -84,35 +84,29 @@ class SitsDataset(Dataset):
             # Uses all patches 64 per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2  
             sits_number = i // num_patches_per_sits
-            print(f"Current sits number: {sits_number}, i: {i}")
+            #(f"Current sits number: {sits_number}, i: {i}")
             patch_loc_i = (i % num_patches_per_sits) // (self.true_size // self.img_size) # row
             patch_loc_j = (i % num_patches_per_sits) % (self.true_size // self.img_size) # column
-            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             months = list(range(24))
             #print(f"Using {num_patches_per_sits} patches per sits for validation/test (spatial)")
         elif self.domain_shift_type == "temporal": # validation/test 
             # Uses 32 patches per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2 // 2 # 32 patches
             sits_number = i // num_patches_per_sits
-            if self.split == "val":
-                patch_index = i % num_patches_per_sits
-            elif self.split == "test":
-                patch_index = (i % num_patches_per_sits) + num_patches_per_sits  # offset 32
-            else:
-                raise ValueError(f"Unexpected split {self.split} for temporal domain shift")
-            patch_loc_i = patch_index // (self.true_size // self.img_size)
-            patch_loc_j = patch_index % (self.true_size // self.img_size)
+            locator = PatchLocator(self.true_size, self.img_size, n_val=num_patches_per_sits, n_test=num_patches_per_sits, seed=42)
+            patch_loc_i, patch_loc_j = locator.get_loc(self.split, i)
             months = list(range(12, 24))  # 12 months (2019)
-            print(f"Current sits number: {sits_number}, i: {i}")
-            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            #print(f"Current sits number: {sits_number}, i: {i}")
+            #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             #print(f"Using {num_patches_per_sits} patches per sits for validation/test (temporal)")
         else: # validation/test with no domain shift
             num_patches_per_sits = 6
             sits_number = i // num_patches_per_sits
-            print(f"Current sits number: {sits_number}, i: {i}")
-            locator = PatchLocator(self.true_size, self.img_size, n_val=6, n_test=6, seed=42)
+            #print(f"Current sits number: {sits_number}, i: {i}")
+            locator = PatchLocator(self.true_size, self.img_size, n_val=num_patches_per_sits, n_test=num_patches_per_sits, seed=42)
             patch_loc_i, patch_loc_j = locator.get_loc(self.split, i)
-            print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
+            #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             months = list(range(24))
         sits_id = self.sits_ids[sits_number]
         curr_sits_path = join(self.image_folder, sits_id)

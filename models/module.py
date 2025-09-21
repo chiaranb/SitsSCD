@@ -206,7 +206,6 @@ class SitsScdModel(L.LightningModule):
         num_samples = min(B, max_samples)
 
         for b in range(num_samples):
-            print(f"Logging {prefix} images for batch {batch_idx}, sample {b}")
             preds_np = preds[b].cpu().numpy() if prefix in ["val", "test"] else None
             gt_np = gt[b].cpu().numpy() if (gt is not None and len(gt) > 0) else None
             input_np = data[b].cpu().numpy()  # [T, C, H, W]
