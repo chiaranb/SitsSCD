@@ -39,9 +39,11 @@ class SitsDataset(Dataset):
 
     '''Return the number of patches, each image is split into patches of size img_size x img_size (128x128).'''
     def __len__(self):
-        if self.split == 'train':
+        if self.split == 'train' and self.domain_shift_type == "none":
             #print(f"Number of training samples: {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 12)}") #1040
-            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 12) 
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 12)
+        elif self.split == "train":
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4)
         # val/test splits
         elif self.domain_shift_type == "spatial":
             #print(f"Number of validation/test samples (spatial): {len(self.sits_ids) * (self.true_size // self.img_size) ** 2}")
@@ -66,12 +68,17 @@ class SitsDataset(Dataset):
             idx: 1
         """
         if self.split == 'train':
-            if self.domain_shift_type == "none" or self.domain_shift_type == "spatial":
+            if self.domain_shift_type == "none":
                 # Uses 60 patches per location, excluding the 4 border patches
                 num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 12 #52
                 #print("Number of patches per sits: ", num_patches_per_sits)
                 sits_number = i // num_patches_per_sits
-                print("Sits number: ", sits_number)
+                #print("Sits number: ", sits_number)
+                patch_loc_i, patch_loc_j = None, None
+                months = self.get_random_months(sits_number)  # 12 months (12 sampled out of 24)
+            elif self.domain_shift_type == "spatial":
+                num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
+                sits_number = i // num_patches_per_sits
                 patch_loc_i, patch_loc_j = None, None
                 months = self.get_random_months(sits_number)  # 12 months (12 sampled out of 24)
             elif self.domain_shift_type == "temporal":

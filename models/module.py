@@ -44,12 +44,13 @@ class SitsScdModel(L.LightningModule):
             freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
             for cls_id, freq in freqs.items():
                 class_name = CLASS_NAMES[cls_id]
-                self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         # Log images at specified intervals
-        if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
+        if batch_idx % self.cfg.logging.train_image_interval == 0:
             pred["pred"] = torch.argmax(pred["logits"], dim=2)
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset, max_samples=self.global_batch_size)
+        
         return loss
     
     @torch.no_grad()
@@ -67,7 +68,7 @@ class SitsScdModel(L.LightningModule):
             freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
             for cls_id, freq in freqs.items():
                 class_name = CLASS_NAMES[cls_id]
-                self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
                         
         # Log images at specified intervals
         if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0):
@@ -124,7 +125,7 @@ class SitsScdModel(L.LightningModule):
             freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
             for cls_id, freq in freqs.items():
                 class_name = CLASS_NAMES[cls_id]
-                self.log(f"test_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"test_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         
         self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset, max_samples=self.global_batch_size)
     
@@ -341,7 +342,7 @@ def plot_confusion_matrix(cm, class_names, title="Confusion Matrix"):
     
     # Always use float formatting to avoid format errors
     # This works for both int and float values
-    fmt = ".0f"
+    fmt = ".3f"
 
     #print(f"CM shape: {cm.shape}, dtype: {cm.dtype}, sample values: {cm.flat[:5]}")
     sns.heatmap(cm, annot=True, fmt=fmt, cmap="Blues",

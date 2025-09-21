@@ -21,7 +21,7 @@ model:
     ignore_index: ${dataset.ignore_index}
   
   logging:
-    train_image_interval: 10
+    train_image_interval: 50
     val_image_interval: 1
 
 datamodule:
@@ -46,7 +46,7 @@ trainer:
   strategy: ${computer.strategy}
   num_nodes: ${computer.num_nodes}
   precision: ${computer.precision}
-  max_epochs: 50
+  max_epochs: 35
   check_val_every_n_epoch: 5
   num_sanity_val_steps: 0
 
@@ -56,7 +56,7 @@ eval:
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   name: ${experiment_name}_${domain_shift_type}
-  project: test
+  project: sitsscd_v2
   log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
