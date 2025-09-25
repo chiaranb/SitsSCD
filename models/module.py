@@ -10,6 +10,7 @@ import io
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import seaborn as sns
+from torchmetrics import Metric
 
 
 class SitsScdModel(L.LightningModule):
@@ -24,6 +25,7 @@ class SitsScdModel(L.LightningModule):
         self.dataset = self.cfg.dataset.name
         self.global_batch_size = self.cfg.dataset.global_batch_size
         self.logged_val_images = False
+        self.class_distribution = ClassDistribution(num_classes=len(CLASS_NAMES), ignore_index=self.ignore_index)
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
@@ -44,12 +46,19 @@ class SitsScdModel(L.LightningModule):
             freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
             for cls_id, freq in freqs.items():
                 class_name = CLASS_NAMES[cls_id]
-                self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         # Log images at specified intervals
         if batch_idx % self.cfg.logging.train_image_interval == 0:
             pred["pred"] = torch.argmax(pred["logits"], dim=2)
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset, max_samples=self.global_batch_size)
+        
+        freqs = self.class_distribution.compute()
+        for cls_id, freq in enumerate(freqs):
+            if cls_id != self.ignore_index:
+                    self.log(f"train_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.class_distribution.reset()
+        
         return loss
     
     @torch.no_grad()
@@ -105,6 +114,19 @@ class SitsScdModel(L.LightningModule):
                     "val/confusion_matrix_sc_image": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+            if "confusion_matrix_iou" in computed:
+                cm_iou = computed["confusion_matrix_iou"]
+                fig_iou = plot_confusion_matrix(cm_iou, self.val_metrics.class_names, title="Validation IoU Confusion Matrix")
+                wandb.log({
+                    "val_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
+                })
+                plt.close(fig_iou)
+        
+        freqs = self.class_distribution.compute()
+        for cls_id, freq in enumerate(freqs):
+            if cls_id != self.ignore_index:
+                self.log(f"val_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.class_distribution.reset()
 
         self.val_metrics.reset()
     
@@ -116,15 +138,7 @@ class SitsScdModel(L.LightningModule):
         # Enable to save predictions local
         #self.save_predictions(pred["pred"], batch_idx)
         self.test_metrics.update(pred["pred"], batch["gt"])
-        
-        with torch.no_grad():
-            gt = batch["gt"]  # B x T x H x W
-            values, counts = torch.unique(gt, return_counts=True)
-            total_pixels = counts.sum().item()
-            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
-            for cls_id, freq in freqs.items():
-                class_name = CLASS_NAMES[cls_id]
-                self.log(f"test_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+        self.class_distribution.update(batch["gt"])
         
         self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset, max_samples=self.global_batch_size)
     
@@ -159,6 +173,20 @@ class SitsScdModel(L.LightningModule):
                     "test/confusion_matrix_sc_image": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+                
+            if "confusion_matrix_iou" in metrics:
+                cm_iou = metrics["confusion_matrix_iou"]
+                fig_iou = plot_confusion_matrix(cm_iou, self.test_metrics.class_names, title="Test IoU Confusion Matrix")
+                wandb.log({
+                    "test_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
+                })
+                plt.close(fig_iou)
+        
+        freqs = self.class_distribution.compute()
+        for cls_id, freq in enumerate(freqs):
+            if cls_id != self.ignore_index:
+                self.log(f"test_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.class_distribution.reset()
 
         self.test_metrics.reset()
 
@@ -277,6 +305,35 @@ class SitsScdModel(L.LightningModule):
             }
             wandb.log(temporal_images) """
 
+
+class ClassDistribution(Metric):
+    def __init__(self, num_classes: int, ignore_index: int = None, dist_sync_on_step=False):
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+
+        # accumulator for counts
+        self.add_state("counts", default=torch.zeros(num_classes, dtype=torch.long), dist_reduce_fx="sum")
+
+    def update(self, gt: torch.Tensor):
+        """
+        gt: Tensor of shape (B x T x H x W)
+        """
+        gt_flat = gt.view(-1)
+
+        if self.ignore_index is not None:
+            mask = gt_flat != self.ignore_index
+            gt_flat = gt_flat[mask]
+
+        values, counts = torch.unique(gt_flat, return_counts=True)
+        for v, c in zip(values, counts):
+            self.counts[v] += c
+
+    def compute(self):
+        total = self.counts.sum().item()
+        freqs = (self.counts.float() / total) * 100 if total > 0 else torch.zeros_like(self.counts, dtype=torch.float)
+        return freqs
 
 def get_parameter_names(model, forbidden_layer_types):
     result = []
