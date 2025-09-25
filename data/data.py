@@ -88,21 +88,23 @@ class SitsDataset(Dataset):
             #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
             months = list(range(24))
             #print(f"Using {num_patches_per_sits} patches per sits for validation/test (spatial)")
-        elif self.domain_shift_type == "temporal": # validation/test 
-            # Uses 32 patches per location
-            num_patches_per_sits = (self.true_size // self.img_size) ** 2 // 2 # 32 patches
+        elif self.domain_shift_type == "temporal":  # validation/test 
+            grid_size = self.true_size // self.img_size   # number of patches per dimension (8 if 256/32)
+            num_patches_per_sits = (grid_size * grid_size) // 2  # 32 patches
 
             sits_number = i // num_patches_per_sits
+            patch_index = i % num_patches_per_sits
 
+            # Compute (row, col) for validation/test patches
             if self.split == "val":
-                patch_index = i % num_patches_per_sits
+                patch_loc_i = patch_index // (grid_size // 2)    # row (0–7)
+                patch_loc_j = patch_index % (grid_size // 2)     # col (0–3)
             elif self.split == "test":
-                patch_index = (i % num_patches_per_sits) + num_patches_per_sits  # offset 32
+                patch_loc_i = patch_index // (grid_size // 2)    # row (0–7)
+                patch_loc_j = (grid_size // 2) + (patch_index % (grid_size // 2))  # col (4–7)
             else:
                 raise ValueError(f"Unexpected split {self.split} for temporal domain shift")
 
-            patch_loc_i = patch_index // (self.true_size // self.img_size)
-            patch_loc_j = patch_index % (self.true_size // self.img_size)
             months = list(range(12, 24))  # 12 months (2019)
             #print(f"Current sits number: {sits_number}, i: {i}")
             #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
