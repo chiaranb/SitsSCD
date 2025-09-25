@@ -71,10 +71,10 @@ class SCDMetric(Metric):
         conf_mat_sc = self.conf_matrix_sc
         
         # Mean Intersection over Union (mIoU) and per-class IoU
-        miou, per_class_iou = compute_miou(conf_mat)
+        miou, per_class_iou, conf_mat_iou = compute_miou(conf_mat)
         
         # Binary Change Score (bc), Semantic Change Score (sc), and Semantic Change Segmentation Score (scs)
-        sc, _ = compute_miou(conf_mat_sc)
+        sc, _, _ = compute_miou(conf_mat_sc)
         bc = np.divide(conf_mat_change[1, 1], conf_mat_change.sum() - conf_mat_change[0, 0],
                        out=np.zeros_like(conf_mat_change[1, 1]),
                        where=conf_mat_change.sum() - conf_mat_change[0, 0] != 0) * 100
@@ -101,9 +101,26 @@ class SCDMetric(Metric):
         recall_macro = np.nanmean(per_class_recall) * 100
         f1_macro = np.nanmean(per_class_f1) * 100
         
-        conf_mat_percent = (conf_mat / conf_mat.sum()) * 100
-        conf_mat_change_percent = (conf_mat_change / conf_mat_change.sum()) * 100
-        conf_mat_sc_percent = (conf_mat_sc / conf_mat_sc.sum()) * 100
+        conf_mat_percent = np.divide(
+            conf_mat, 
+            conf_mat.sum(axis=1, keepdims=True), 
+            out=np.zeros_like(conf_mat, dtype=float),
+            where=conf_mat.sum(axis=1, keepdims=True) != 0
+        ) * 100
+
+        conf_mat_change_percent = np.divide(
+            conf_mat_change,
+            conf_mat_change.sum(axis=1, keepdims=True),
+            out=np.zeros_like(conf_mat_change, dtype=float),
+            where=conf_mat_change.sum(axis=1, keepdims=True) != 0
+        ) * 100
+
+        conf_mat_sc_percent = np.divide(
+            conf_mat_sc,
+            conf_mat_sc.sum(axis=1, keepdims=True),
+            out=np.zeros_like(conf_mat_sc, dtype=float),
+            where=conf_mat_sc.sum(axis=1, keepdims=True) != 0
+        ) * 100
         
         output = {
             "acc": np.diag(conf_mat).sum() / conf_mat.sum() * 100,
@@ -117,7 +134,8 @@ class SCDMetric(Metric):
             "scs": scs,
             "confusion_matrix": conf_mat_percent,
             "confusion_matrix_change": conf_mat_change_percent,
-            "confusion_matrix_sc": conf_mat_sc_percent
+            "confusion_matrix_sc": conf_mat_sc_percent,
+            "confusion_matrix_iou": conf_mat_iou
         }
         
         for class_id, class_name in enumerate(self.class_names):
@@ -134,6 +152,25 @@ class SCDMetric(Metric):
 
 # Computes the mean intersection-over-union (mIoU) and per-class IoU from a confusion matrix.
 def compute_miou(confusion_matrix):
-    den_iou = np.sum(confusion_matrix, axis=1) + np.sum(confusion_matrix, axis=0) - np.diag(confusion_matrix)
-    per_class_iou = np.divide(np.diag(confusion_matrix), den_iou, out=np.zeros_like(den_iou), where=den_iou != 0)
-    return np.nanmean(per_class_iou) * 100, per_class_iou * 100
+    num_classes = confusion_matrix.shape[0]
+    iou_matrix = np.zeros_like(confusion_matrix, dtype=float)
+    per_class_iou = np.zeros(num_classes, dtype=float)
+
+    for i in range(num_classes):
+        tp = confusion_matrix[i, i]
+        fn = np.sum(confusion_matrix[i, :]) - tp
+        fp = np.sum(confusion_matrix[:, i]) - tp
+        denom = tp + fn + fp
+
+        if denom > 0:
+            # IoU on diagonal
+            per_class_iou[i] = tp / denom
+            iou_matrix[i, i] = per_class_iou[i]
+
+            # Off-diagonal contributions
+            for j in range(num_classes):
+                if j != i:
+                    iou_matrix[i, j] = (confusion_matrix[i, j] + confusion_matrix[j, i]) / denom
+
+    miou = np.nanmean(per_class_iou) * 100
+    return miou, per_class_iou * 100, iou_matrix * 100
