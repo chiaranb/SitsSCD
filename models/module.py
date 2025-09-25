@@ -47,7 +47,7 @@ class SitsScdModel(L.LightningModule):
                 self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         # Log images at specified intervals
-        if batch_idx % self.cfg.logging.train_image_interval == 0:
+        if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
             pred["pred"] = torch.argmax(pred["logits"], dim=2)
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset, max_samples=self.global_batch_size)
         
@@ -61,7 +61,7 @@ class SitsScdModel(L.LightningModule):
         self.val_metrics.update(pred["pred"], batch["gt"])
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
         
-        with torch.no_grad():
+        with torch.no_grad() :
             gt = batch["gt"]  # B x T x H x W
             values, counts = torch.unique(gt, return_counts=True)
             total_pixels = counts.sum().item()
@@ -71,7 +71,7 @@ class SitsScdModel(L.LightningModule):
                 self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
                         
         # Log images at specified intervals
-        if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0):
+        if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0) and self.global_rank == 0:
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="val", dataset_type=self.dataset, max_samples=self.global_batch_size)
     
     def on_validation_epoch_end(self):
@@ -83,29 +83,36 @@ class SitsScdModel(L.LightningModule):
             # Full-class confusion matrix
             if "confusion_matrix" in computed:
                 cm = computed["confusion_matrix"]
-                fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix")
+                fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "val/confusion_matrix_image": wandb.Image(fig)
+                    "val_matrix/confusion_matrix_pixel_classification": wandb.Image(fig)
                 })
                 plt.close(fig)
 
             # Binary change detection confusion matrix
             if "confusion_matrix_change" in computed:
                 cm_change = computed["confusion_matrix_change"]
-                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix")
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "val/confusion_matrix_change_image": wandb.Image(fig_change),
+                    "val_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change),
                 })
                 plt.close(fig_change)
 
             # Semantic change confusion matrix
             if "confusion_matrix_sc" in computed:
                 cm_sc = computed["confusion_matrix_sc"]
-                fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix")
+                fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "val/confusion_matrix_sc_image": wandb.Image(fig_sc),
+                    "val_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+            if "confusion_matrix_iou" in computed:
+                cm_iou = computed["confusion_matrix_iou"]
+                fig_iou = plot_confusion_matrix(cm_iou, self.val_metrics.class_names, title="Validation IoU Confusion Matrix")
+                wandb.log({
+                    "val_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
+                })
+                plt.close(fig_iou)
 
         self.val_metrics.reset()
     
@@ -139,27 +146,35 @@ class SitsScdModel(L.LightningModule):
             # Confusion matrices: log as images and tables
             if "confusion_matrix" in metrics:
                 cm = metrics["confusion_matrix"]
-                fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix")
+                fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "test/confusion_matrix_image": wandb.Image(fig),
+                    "test_matrix/confusion_matrix_pixel_classification": wandb.Image(fig),
                 })
                 plt.close(fig)
 
             if "confusion_matrix_change" in metrics:
                 cm_change = metrics["confusion_matrix_change"]
-                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix")
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "test/confusion_matrix_change_image": wandb.Image(fig_change),
+                    "test_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change),
                 })
                 plt.close(fig_change)
 
             if "confusion_matrix_sc" in metrics:
                 cm_sc = metrics["confusion_matrix_sc"]
-                fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix")
+                fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix Pixel Classification")
                 wandb.log({
-                    "test/confusion_matrix_sc_image": wandb.Image(fig_sc),
+                    "test_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+                
+            if "confusion_matrix_iou" in metrics:
+                cm_iou = metrics["confusion_matrix_iou"]
+                fig_iou = plot_confusion_matrix(cm_iou, self.test_metrics.class_names, title="Test IoU Confusion Matrix")
+                wandb.log({
+                    "test_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
+                })
+                plt.close(fig_iou)
 
         self.test_metrics.reset()
 
