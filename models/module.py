@@ -38,15 +38,6 @@ class SitsScdModel(L.LightningModule):
                 on_step=True,
                 on_epoch=True,
             )
-        
-        with torch.no_grad():
-            gt = batch["gt"]  # B x T x H x W
-            values, counts = torch.unique(gt, return_counts=True)
-            total_pixels = counts.sum().item()
-            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
-            for cls_id, freq in freqs.items():
-                class_name = CLASS_NAMES[cls_id]
-                self.log(f"train_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         # Log images at specified intervals
         if batch_idx % self.cfg.logging.train_image_interval == 0:
