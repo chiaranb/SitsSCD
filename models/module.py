@@ -44,13 +44,14 @@ class SitsScdModel(L.LightningModule):
             pred["pred"] = torch.argmax(pred["logits"], dim=2)
             self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset, max_samples=self.global_batch_size)
         
+        self.class_distribution.update(batch["gt"])
         freqs = self.class_distribution.compute()
         for cls_id, freq in enumerate(freqs):
             if cls_id != self.ignore_index:
                     self.log(f"train_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         self.class_distribution.reset()
         
-        return loss
+        return loss        
     
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -59,15 +60,7 @@ class SitsScdModel(L.LightningModule):
         loss = self.loss(pred, batch, average=True)["loss"]
         self.val_metrics.update(pred["pred"], batch["gt"])
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
-        
-        with torch.no_grad() :
-            gt = batch["gt"]  # B x T x H x W
-            values, counts = torch.unique(gt, return_counts=True)
-            total_pixels = counts.sum().item()
-            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
-            for cls_id, freq in freqs.items():
-                class_name = CLASS_NAMES[cls_id]
-                self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False)
+        self.class_distribution.update(batch["gt"])
                         
         # Log images at specified intervals
         if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0) and self.global_rank == 0:
@@ -225,7 +218,6 @@ class SitsScdModel(L.LightningModule):
         num_samples = min(B, max_samples)
 
         for b in range(num_samples):
-            print(f"Logging {prefix} images for batch {batch_idx}, sample {b}")
             preds_np = preds[b].cpu().numpy() if prefix in ["val", "test"] else None
             gt_np = gt[b].cpu().numpy() if (gt is not None and len(gt) > 0) else None
             input_np = data[b].cpu().numpy()  # [T, C, H, W]
