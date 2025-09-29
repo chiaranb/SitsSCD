@@ -41,7 +41,7 @@ class SitsDataset(Dataset):
     def __len__(self):
         if self.split == 'train':
             #print(f"Number of training samples: {len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4)}")
-            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2 - 4) # self.sits_ids = 20 (20x60)
+            return len(self.sits_ids) * ((self.true_size // self.img_size) ** 2) # self.sits_ids = 20 (20x64)
         # val/test splits
         elif self.domain_shift_type == "spatial":
             #print(f"Number of validation/test samples (spatial): {len(self.sits_ids) * (self.true_size // self.img_size) ** 2}")
@@ -71,13 +71,13 @@ class SitsDataset(Dataset):
                 num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
                 sits_number = i // num_patches_per_sits
                 patch_loc_i, patch_loc_j = None, None
-                months = self.get_random_months(sits_number)  # 12 months (12 sampled out of 24)
+                months = self.get_months(sits_number)  # 12 months (12 sampled out of 24)
             elif self.domain_shift_type == "temporal":
-                # Uses 60 patches per location, excluding the 4 border patches
-                num_patches_per_sits = (self.true_size // self.img_size) ** 2 - 4
+                # Uses 64 patches per location
+                num_patches_per_sits = (self.true_size // self.img_size) ** 2
                 sits_number = i // num_patches_per_sits
                 patch_loc_i, patch_loc_j = None, None
-                months = self.get_random_months(sits_number)  # 6 months (2018) (6 sampled out of 12)
+                months = self.get_months(sits_number)  
         elif self.domain_shift_type == "spatial": # validation/test
             # Uses all patches 64 per location
             num_patches_per_sits = (self.true_size // self.img_size) ** 2  
@@ -138,11 +138,12 @@ class SitsDataset(Dataset):
             sits_ids = json.load(open(join(self.path, 'split.json')))['train'] # Same locations (from train)
             print(f"Loading {split} split without domain shift (same locations as train)")
         sits_ids.sort()
-        num_sits = len(sits_ids)
-        gt = torch.zeros((num_sits, 24, 1024, 1024), dtype=torch.int8)
+        num_sits = len(sits_ids) # number of SITS in the split
+        gt = torch.zeros((num_sits, 24, 1024, 1024), dtype=torch.int8) # [num_sits, T, H, W]
         for sits in range(num_sits):
             gt[sits] = torch.tensor(np.load(join(self.gt_folder, f'{sits_ids[sits]}.npy')), dtype=torch.int8)
         end_time = time.time()
+        print("Ground truth shape:", gt.shape)
         print(f"Loading {split} ground truth took {(end_time - start_time):.2f} seconds")
         return gt, sits_ids
 
@@ -182,6 +183,11 @@ class SitsDataset(Dataset):
             months = self.month_list[sits_number][:12]
             random.shuffle(months)
             months = sorted(months[:self.train_length])
+        return months
+    
+    def get_months(self, sits_number):
+        months = self.month_list[sits_number][12:]
+        months = months[:self.train_length]
         return months
 
     def load_data(self, sits_number, sits_id, months, curr_sits_path):
@@ -281,8 +287,8 @@ class DynamicEarthNet(SitsDataset):
         name_rgb = [f'{sits_id}_{day}_rgb.jpeg' for day in days]
         name_infra = [f'{sits_id}_{day}_infra.jpeg' for day in days]
         for d, (n_rgb, n_infra) in enumerate(zip(name_rgb, name_infra)):
-            data[d, :3] = torchvision.io.read_image(join(curr_sits_path, n_rgb))
-            data[d, 3] = torchvision.io.read_image(join(curr_sits_path, n_infra))
+            data[d, :3] = torchvision.io.read_image(join(curr_sits_path, n_rgb)) # RGB
+            data[d, 3] = torchvision.io.read_image(join(curr_sits_path, n_infra)) # Infrared
         return data, days
 
     """Randomly augments the date for training, otherwise returns the original date."""
