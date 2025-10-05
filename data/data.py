@@ -9,6 +9,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 from .transforms import random_resize_crop, random_rotate, random_crop, random_flipv, random_fliph
 import time
+import os
 
 '''SitsDataset is a base class for datasets that handle time series of satellite images.'''
 class SitsDataset(Dataset):
@@ -125,7 +126,13 @@ class SitsDataset(Dataset):
         data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j)
         data = self.normalize(data)
         positions = torch.tensor(days, dtype=torch.long)
-        output = {"data": data, "gt": gt.long(), "positions": positions, "idx": sits_number}
+        print(f"Data shape: {data.shape}, GT shape: {gt.shape}, Positions shape: {positions.shape}, Idx: {sits_number}, Sits_id: {sits_id}")
+        output = {"data": data, "gt": gt.long(), "positions": positions, "sits_id": sits_number, "idx": i}
+        
+        
+        save_dir = "/teamspace/studios/this_studio/SitsSCD/labels_embeddings"
+        os.makedirs(save_dir, exist_ok=True)  
+        np.save(join(save_dir, f"{sits_number}_{i}.npy"), gt.numpy())
         return output
 
     def load_ground_truth(self, split):

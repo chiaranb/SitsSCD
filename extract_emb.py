@@ -25,6 +25,7 @@ class MultiUTAETemporalExtractor(nn.Module):
     def forward(self, batch):
         x = batch["data"].float()      # B x T x C x H x W
         batch_positions = batch["positions"]
+        sits_id = batch["sits_id"]
         idx = batch["idx"]
         B, T, C, H, W = x.shape
         print(f"Input shape: {x.shape}")
@@ -51,7 +52,7 @@ class MultiUTAETemporalExtractor(nn.Module):
         else:
             emb = out_temporal.amax(dim=[-2, -1])  # B x T x Cf
 
-        return {"embeddings": emb, "pad_mask": pad_mask, "att": att, "idx": idx, "positions": batch_positions}
+        return {"embeddings": emb, "pad_mask": pad_mask, "att": att, "sits_id": sits_id, "idx": idx, "positions": batch_positions}
 
 
 def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
@@ -71,8 +72,9 @@ def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
         meta = batch_meta[i]
         for t in range(T):
             row = {
+                "sits_id": meta["sits_id"],
                 "idx": int(meta["idx"]),
-                "timestamp": int(meta["positions"][t]),
+                "timestamp": t,
             }
             for k in range(C):
                 row[f"emb_{k}"] = float(embeddings[i, t, k])
@@ -95,12 +97,13 @@ def extract_embeddings_from_dataloader(dataloader, utae_model, csv_path, pool='a
         for batch in dataloader:
             out = extractor(batch)
             emb = out['embeddings']  # B x T x F
+            sits_id = out['sits_id'].cpu().numpy()  # B
             idxs = out["idx"].detach().cpu().numpy()  # B
             positions = out["positions"].detach().cpu().numpy()  # B x T
 
             # Prepara i metadati per ogni sample
             batch_meta = [
-                {"idx": int(idxs[i]), "positions": positions[i]} for i in range(len(idxs))
+                {"sits_id": int(sits_id[i]), "idx": int(idxs[i]), "positions": positions[i]} for i in range(len(idxs))
             ]
 
             save_temporal_embeddings(batch_meta, emb, csv_path, mode=mode)
@@ -112,14 +115,14 @@ if __name__ == "__main__":
     from data.data import DynamicEarthNet
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv_path", type=str, default="temporal_embeddings.csv", help="Path CSV output")
+    parser.add_argument("--csv_path", type=str, default="temporal_embeddings_test.csv", help="Path CSV output")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--pool", type=str, choices=['avg', 'max'], default='avg')
     args = parser.parse_args()
 
     # Istanzia dataset e DataLoader
     dataset = DynamicEarthNet(
-        path="/teamspace/studios/this_studio/SitsSCD/datasets/DynamicEarthNet_temporal",
+        path="/teamspace/studios/this_studio/SitsSCD/datasets/DynamicEarthNet_Test",
         split='train',
         domain_shift_type='temporal',
         train_length=12,
@@ -135,4 +138,7 @@ if __name__ == "__main__":
     utae_model.eval()
 
     extract_embeddings_from_dataloader(dataloader, utae_model, args.csv_path, pool=args.pool)
+    # Count total embeddings
+    df = pd.read_csv(args.csv_path)
+    print(f"Totale embeddings estratti: {len(df)}")
     print(f"Embeddings temporali salvati su {args.csv_path}")
