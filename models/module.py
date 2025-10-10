@@ -29,7 +29,12 @@ class SitsScdModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
-        loss = self.loss(pred, batch, average=True)
+        logits = pred["logits"]  # B x T x C x H x W
+        logits = logits.mean(dim=[-2,-1])  # B x T x C
+        pred["pred"] = torch.argmax(logits, dim=2) # B x T
+        gt = batch["gt"]  # B x T x H x W
+        gt = gt.float().mean(dim=[-2,-1]).round().long()
+        loss = self.loss(logits, gt, average=True)
         for metric_name, metric_value in loss.items():
             self.log(
                 f"train/{metric_name}",
@@ -55,14 +60,17 @@ class SitsScdModel(L.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         pred = self.model(batch)
-        pred["pred"] = torch.argmax(pred["logits"], dim=2)
+        logits = pred["logits"]  # B x T x C x H x W
+        logits = logits.mean(dim=[-2,-1])  # B x T x C
+        pred["pred"] = torch.argmax(logits, dim=2) # B x T
+        gt = batch["gt"]  # B x T x H x W
+        gt = gt.float().mean(dim=[-2,-1]).round().long()  # B x T
         loss = self.loss(pred, batch, average=True)["loss"]
-        self.val_metrics.update(pred["pred"], batch["gt"])
+        self.val_metrics.update(pred["pred"], gt)
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
         
         with torch.no_grad() :
-            gt = batch["gt"]  # B x T x H x W
-            values, counts = torch.unique(gt, return_counts=True)
+            values, counts = torch.unique(batch["gt"], return_counts=True)
             total_pixels = counts.sum().item()
             freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
             for cls_id, freq in freqs.items():
@@ -124,11 +132,15 @@ class SitsScdModel(L.LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         pred = self.model(batch)
-        pred["pred"] = torch.argmax(pred["logits"], dim=2)
+        logits = pred["logits"]  # B x T x C x H x W
+        logits = logits.mean(dim=[-2,-1])  # B x T x C
+        pred["pred"] = torch.argmax(logits, dim=2) # B x T
 
         # Enable to save predictions local
         #self.save_predictions(pred["pred"], batch_idx)
-        self.test_metrics.update(pred["pred"], batch["gt"])
+        gt = batch["gt"]  # B x T x H x W
+        gt = gt.float().mean(dim=[-2,-1]).round().long()  # B x T
+        self.test_metrics.update(pred["pred"], gt)
         self.class_distribution.update(batch["gt"])
         
         self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset, max_samples=self.global_batch_size)

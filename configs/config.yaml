@@ -1,7 +1,7 @@
 defaults:
   - model: baseline
   - computer: gpu
-  - dataset: muds
+  - dataset: dynamicearthnet
   - _self_
 
 model:
@@ -9,13 +9,13 @@ model:
   dataset: ${dataset}
 
   val_metrics:
-    _target_: metrics.scd_metrics.SCDMetric
+    _target_: metrics.scd_patch_metrics.SCDMetricPatch
     num_classes: ${dataset.num_classes}
     class_names: ${dataset.class_names}
     ignore_index: ${dataset.ignore_index}
 
   test_metrics:
-    _target_: metrics.scd_metrics.SCDMetric
+    _target_: metrics.scd_patch_metrics.SCDMetricPatch
     num_classes: ${dataset.num_classes}
     class_names: ${dataset.class_names}
     ignore_index: ${dataset.ignore_index}
@@ -56,7 +56,7 @@ eval:
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   name: ${experiment_name}_${domain_shift_type}
-  project: sitsscd_v2
+  project: sitsscd_v3
   log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
