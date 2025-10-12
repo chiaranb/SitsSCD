@@ -29,12 +29,14 @@ class SitsScdModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
-        logits = pred["logits"]  # B x T x C x H x W
-        logits = logits.mean(dim=[-2, -1])  # B x T x C
-        pred["pred"] = torch.argmax(logits, dim=2)  # B x T
-        gt = batch["gt"]  # B x T x H x W
-        gt = gt.float().mean(dim=[-2, -1]).round().long()
-        loss_dict = self.loss({"logits": logits}, {"gt": gt}, average=True)
+        logits = pred["logits"]  # [B, T, C, H, W]
+
+        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
+
+        gt = batch["gt"]  # [B, T, H, W]
+        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+
+        loss_dict = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)
         loss = loss_dict["loss"]
 
         for metric_name, metric_value in loss_dict.items():
@@ -46,13 +48,15 @@ class SitsScdModel(L.LightningModule):
                 on_epoch=True,
             )
 
-        # Log images at specified intervals
+        self.class_distribution.update(gt)
+        
         if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
             self.log_wandb_images(
-                pred_pixel=pred["pred"],
-                gt=batch["gt"],
-                batch_idx=batch_idx,
+                pred_pixel=None,
+                pred_class=None,
+                gt=gt,
                 data=batch["data"],
+                batch_idx=batch_idx,
                 prefix="train",
                 dataset_type=self.dataset,
                 max_samples=self.global_batch_size
@@ -61,8 +65,14 @@ class SitsScdModel(L.LightningModule):
         freqs = self.class_distribution.compute()
         for cls_id, freq in enumerate(freqs):
             if cls_id != self.ignore_index:
-                self.log(f"train_freq/{CLASS_NAMES[cls_id]}", freq.item(),
-                        on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+                self.log(
+                    f"train_freq/{CLASS_NAMES[cls_id]}",
+                    freq.item(),
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
         self.class_distribution.reset()
 
         return loss
@@ -70,36 +80,36 @@ class SitsScdModel(L.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         pred = self.model(batch)
-        logits = pred["logits"]  # B x T x C x H x W
-        logits = logits.mean(dim=[-2, -1])  # B x T x C
-        pred["pred"] = torch.argmax(logits, dim=2)  # B x T
-        gt = batch["gt"]  # B x T x H x W
-        gt = gt.float().mean(dim=[-2, -1]).round().long()  # B x T
-        loss = self.loss(pred, batch, average=True)["loss"]
+        logits = pred["logits"]  # [B, T, C, H, W]
 
-        self.val_metrics.update(pred["pred"], gt)
+        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
+
+        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
+        pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
+
+        gt = batch["gt"]  # [B, T, H, W]
+        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+
+        loss = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)["loss"]
+
+        self.val_metrics.update(pred_class, gt_avg)
+        self.class_distribution.update(gt)
+
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
 
-        # Frequenze classi
-        values, counts = torch.unique(batch["gt"], return_counts=True)
-        total_pixels = counts.sum().item()
-        freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
-        for cls_id, freq in freqs.items():
-            class_name = CLASS_NAMES[cls_id]
-            self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True,
-                    prog_bar=False, sync_dist=True)
-
-        # Log immagini
         if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0) and self.global_rank == 0:
             self.log_wandb_images(
-                pred_pixel=pred["pred"],
+                pred_pixel=pred_pixel,
+                pred_class=pred_class,
                 gt=batch["gt"],
-                batch_idx=batch_idx,
                 data=batch["data"],
+                batch_idx=batch_idx,
                 prefix="val",
                 dataset_type=self.dataset,
                 max_samples=self.global_batch_size
             )
+
+        return loss
     
     def on_validation_epoch_end(self):
         computed = self.val_metrics.compute()
@@ -151,27 +161,21 @@ class SitsScdModel(L.LightningModule):
     
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        # --- Forward ---
         pred = self.model(batch)
         logits = pred["logits"]  # [B, T, C, H, W]
 
-        # --- 1️⃣ Predizione pixel-wise ---
         pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
 
-        # --- 2️⃣ Predizione aggregata (una classe per timestep) ---
         logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
         pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
 
-        # --- Ground truth ---
         gt = batch["gt"]  # [B, T, H, W]
         gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
 
-        # --- Aggiornamento metriche ---
         self.test_metrics.update(pred_class, gt_avg)
         self.class_distribution.update(gt)
 
-        # --- Logging immagini su W&B (logga TUTTI i batch) ---
-        if self.global_rank == 0:  # evita duplicati tra GPU
+        if self.global_rank == 0:  
             self.log_wandb_images(
                 pred_pixel=pred_pixel,
                 pred_class=pred_class,
@@ -276,16 +280,16 @@ class SitsScdModel(L.LightningModule):
         Log pixel-wise prediction, GT, input RGB/IR, and class timeline.
         Each wandb.Image now includes a caption with batch and sample info.
         """
-        B = pred_pixel.shape[0]
-        num_samples = min(B, max_samples)
+        num_samples = min(gt.shape[0], max_samples)
 
         for b in range(num_samples):
-            pred_px_np = pred_pixel[b].cpu().numpy()  # [T, H, W]
-            pred_cls_np = pred_class[b].cpu().numpy()  # [T]
+            if pred_pixel is not None:
+                pred_px_np = pred_pixel[b].cpu().numpy()  # [T, H, W]
+            if pred_class is not None:
+                pred_cls_np = pred_class[b].cpu().numpy()  # [T]
             gt_px_np = gt[b].cpu().numpy()  # [T, H, W]
             input_np = data[b].cpu().numpy()  # [T, C, H, W]
 
-            # --- Prepara RGB/IR ---
             if dataset_type == "DynamicEarthNet":
                 input_rgb = input_np[:, :3, :, :]
                 input_ir = input_np[:, 3:, :, :]
@@ -308,7 +312,7 @@ class SitsScdModel(L.LightningModule):
             }
             wandb.log(input_images)
 
-            # --- Log IR (solo se presente) ---
+            # --- Log IR ---
             if input_ir is not None:
                 input_ir_images = {
                     f"{prefix}_input_infrared/sample{b}_t{t:02d}": wandb.Image(
@@ -319,65 +323,61 @@ class SitsScdModel(L.LightningModule):
                 }
                 wandb.log(input_ir_images)
 
-            # --- Log predizioni pixel-wise ---
-            pred_images = {
-                f"{prefix}_pred_pixel/sample{b}_t{t:02d}": wandb.Image(
-                    to_class_colormap_image(pred_px_np[t]),
-                    caption=f"batch={batch_idx} | sample={b} | timestep={t}"
-                )
-                for t in range(pred_px_np.shape[0])
-            }
-            wandb.log(pred_images)
+            # --- Log prediction pixel-wise ---
+            if pred_pixel is not None:
+                pred_images = {
+                    f"{prefix}_pred_pixel/sample{b}_t{t:02d}": wandb.Image(
+                        to_class_colormap_image(pred_px_np[t]),
+                        caption=f"batch={batch_idx} | sample={b} | timestep={t}"
+                    )
+                    for t in range(pred_px_np.shape[0])
+                }
+                wandb.log(pred_images)
 
             # --- Log ground truth pixel-wise ---
             gt_images = {
                 f"{prefix}_gt_pixel/sample{b}_t{t:02d}": wandb.Image(
                     to_class_colormap_image(gt_px_np[t]),
-                    caption=f"batch={batch_idx} | sample={b} | timestep={t} | ground truth"
+                    caption=f"batch={batch_idx} | sample={b} | timestep={t}"
                 )
                 for t in range(gt_px_np.shape[0])
             }
             wandb.log(gt_images)
 
-            # --- Grafico temporale classi aggregate ---
-            fig, ax = plt.subplots(figsize=(4.2, 2.3), dpi=120)
+            if pred_pixel is not None:
+                # --- Timeline ---
+                fig, ax = plt.subplots(figsize=(4.2, 2.3), dpi=120)
 
-            timesteps = np.arange(len(pred_cls_np))
-            gt_cls_np = gt_px_np.mean(axis=(1, 2)).round().astype(int)
+                timesteps = np.arange(len(pred_cls_np))
+                gt_cls_np = gt_px_np.mean(axis=(1, 2)).round().astype(int)
 
-            # Linee di sfondo
-            ax.set_axisbelow(True)
-            ax.yaxis.grid(True, linestyle='--', alpha=0.3)
-            ax.xaxis.grid(True, linestyle='--', alpha=0.1)
+                ax.set_axisbelow(True)
+                ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+                ax.xaxis.grid(True, linestyle='--', alpha=0.1)
 
-            # Linee predizione e ground truth
-            ax.plot(timesteps, gt_cls_np, marker='s', label='GT', color='tab:red', linewidth=1)
-            ax.plot(timesteps, pred_cls_np, marker='o', label='Pred', color='tab:blue', linewidth=1, alpha=0.85)
+                ax.plot(timesteps, gt_cls_np, marker='s', label='GT', color='tab:red', linewidth=1)
+                ax.plot(timesteps, pred_cls_np, marker='o', label='Pred', color='tab:blue', linewidth=1, alpha=0.85)
 
-            # Etichette e assi
-            ax.set_title(f"Sample {b} | Batch {batch_idx}", fontsize=9)
-            ax.set_xlabel("Timestep", fontsize=8)
-            ax.set_ylabel("Class", fontsize=8)
+                ax.set_title(f"Sample {b} | Batch {batch_idx}", fontsize=9)
+                ax.set_xlabel("Timestep", fontsize=8)
+                ax.set_ylabel("Class", fontsize=8)
 
-            # Mostra tutti i timestep sull’asse x
-            ax.set_xticks(timesteps)
-            ax.set_xticklabels([str(t) for t in timesteps], fontsize=7)
+                ax.set_xticks(timesteps)
+                ax.set_xticklabels([str(t) for t in timesteps], fontsize=7)
 
-            # Classi sull’asse y
-            ax.set_yticks(np.arange(len(CLASS_NAMES)))
-            ax.set_yticklabels(CLASS_NAMES, rotation=30, fontsize=7)
+                ax.set_yticks(np.arange(len(CLASS_NAMES)))
+                ax.set_yticklabels(CLASS_NAMES, rotation=30, fontsize=7)
 
-            # Stile generale
-            ax.tick_params(axis='y', labelsize=7)
-            ax.legend(fontsize=7, loc='upper right', frameon=False)
-            plt.tight_layout()
+                ax.tick_params(axis='y', labelsize=7)
+                ax.legend(fontsize=7, loc='upper right', frameon=False)
+                plt.tight_layout()
 
-            # Log su wandb
-            wandb.log({
-                f"{prefix}_timeline/sample{b}": wandb.Image(
-                    fig                )
-            })
-            plt.close(fig)
+                wandb.log({
+                    f"{prefix}_timeline/sample{b}": wandb.Image(
+                        fig
+                    )
+                })
+                plt.close(fig)
 
 
 class ClassDistribution(Metric):
@@ -452,17 +452,6 @@ def to_class_colormap_image(img_array):
     colored = CLASS_COLORS[img_array.astype(int)]
     return colored
 
-def confusion_matrix_to_wandb_table(cm, class_names):
-    """
-    Convert a confusion matrix (numpy array) into a wandb.Table
-    for interactive visualization.
-    """
-    table = wandb.Table(columns=["Actual", "Predicted", "Count"])
-    n_classes = cm.shape[0]
-    for i in range(n_classes):
-        for j in range(n_classes):
-            table.add_data(class_names[i], class_names[j], int(cm[i, j]))
-    return table
 
 def plot_confusion_matrix(cm, class_names, title="Confusion Matrix"):
     plt.figure(figsize=(8, 6))
