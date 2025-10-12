@@ -1,6 +1,7 @@
 """
-Code from
-https://github.com/clcarwin/focal_loss_pytorch
+Patch-level Focal Loss
+ - logits: [B, T, C]
+ - gt: [B, T]
 """
 
 import torch
@@ -17,90 +18,85 @@ class FocalLoss(nn.Module):
         self.ignore_index = ignore_index
         if isinstance(alpha, (float, int)):
             self.alpha = torch.tensor([alpha, 1 - alpha])
-        if isinstance(alpha, list):
+        elif isinstance(alpha, list):
             self.alpha = torch.tensor(alpha)
         self.size_average = size_average
 
     def forward(self, x, y):
         """
         Args:
-            x: dict that contains "logits": torch.Tensor BxTxKxHxW
-            y: dict that contains "gt": torch.Tensor BxTxHxW
+            x: dict that contains "logits": torch.Tensor [B, T, C]
+            y: dict that contains "gt": torch.Tensor [B, T]
         Returns:
-            torch.Tensor: Focal loss between x and y: torch.Tensor([B])
+            torch.Tensor: scalar focal loss
         """
-        prediction = x["logits"]
-        target = y["gt"]
-        if prediction.dim() > 2:
-            prediction = prediction.contiguous().view(prediction.size(0)*prediction.size(1), prediction.size(2), -1)  # B,T,K,H,W => B*T,K,H*W
-            prediction = prediction.transpose(1, 2)  # N,K,H*W => N,H*W,K
-            prediction = prediction.contiguous().view(-1, prediction.size(2))  # N,H*W,K => N*H*W,K
-        target = target.contiguous().flatten()
+        prediction = x["logits"]  # [B, T, C]
+        target = y["gt"]          # [B, T]
+
+        if prediction.ndim == 5:
+            B, T, C, H, W = prediction.shape
+        elif prediction.ndim == 3:
+            B, T, C = prediction.shape
+            H = W = 1  # placeholder per compatibilità
+            prediction = prediction.view(B, T, C, H, W)
+        else:
+            raise ValueError(f"Unexpected prediction shape: {prediction.shape}")
+        prediction = prediction.permute(0, 1, 3, 4, 2).contiguous().view(B * T * H * W, C)
+        target = target.contiguous().view(B * T * H * W)
 
         if self.ignore_index is not None:
-            prediction = prediction[target != self.ignore_index]
-            target = target[target != self.ignore_index]
+            valid_mask = target != self.ignore_index
+            prediction = prediction[valid_mask]
+            target = target[valid_mask]
 
-        target = target[:, None]
+        target = target.unsqueeze(1)
         logpt = F.log_softmax(prediction, dim=-1)
         logpt = logpt.gather(1, target)
         logpt = logpt.view(-1)
-        pt = Variable(logpt.data.exp())
+        pt = logpt.exp()
 
         if self.alpha is not None:
             if self.alpha.type() != prediction.data.type():
                 self.alpha = self.alpha.type_as(prediction.data)
             at = self.alpha.gather(0, target.data.view(-1))
-            logpt = logpt * Variable(at)
+            logpt = logpt * at
 
         loss = -1 * (1 - pt) ** self.gamma * logpt
-        if self.size_average:
-            return loss.mean()
-        else:
-            return loss.sum()
+        return loss.mean() if self.size_average else loss.sum()
 
 
 LOSSES = {
     "focal": FocalLoss,
 }
+
 AVERAGE = {False: lambda x: x, True: lambda x: x.mean(dim=-1)}
 
 
 class Losses(nn.Module):
-    """The Losses meta-object that can take a mix of losses."""
+    """Meta-loss container for multiple weighted losses (patch-level)."""
 
     def __init__(self, mix={}, ignore_index=None):
-        """Initializes the Losses object.
-        Args:
-            mix (dict): dictionary with keys "loss_name" and values weight
-        """
         super(Losses, self).__init__()
         assert len(mix)
         self.ignore_index = ignore_index
         self.init_losses(mix)
 
     def init_losses(self, mix):
-        """Initializes the losses.
-        Args:
-            mix (dict): dictionary with keys "loss_name" and values weight
-        """
         self.loss = {}
-        for m, v in mix.items():
-            m = m.lower()
-            try:
-                self.loss[m] = (LOSSES[m](ignore_index=self.ignore_index), v)
-            except KeyError:
-                raise KeyError(f"Loss {m} not found in {LOSSES.keys()}")
+        for name, weight in mix.items():
+            name = name.lower()
+            if name not in LOSSES:
+                raise KeyError(f"Loss {name} not found. Available: {LOSSES.keys()}")
+            self.loss[name] = (LOSSES[name](ignore_index=self.ignore_index), weight)
 
     def forward(self, x, y, average=True):
-        """Computes the losses.
+        """
         Args:
-            x: dict that contains "logits": torch.Tensor BxTxKxHxW
-            y: dict that contains "gt": torch.Tensor BxTxHxW
-            average (bool): whether to average the losses or not
+            x: dict that contains "logits": torch.Tensor [B, T, C]
+            y: dict that contains "gt": torch.Tensor [B, T]
         Returns:
-            dict: dictionary with losses
+            dict of individual and total loss values
         """
         losses = {n: AVERAGE[average](f(x, y)) for n, (f, _) in self.loss.items()}
-        losses["loss"] = sum([losses[n] * w for n, (_, w) in self.loss.items()])
+        losses["loss"] = sum(losses[n] * w for n, (_, w) in self.loss.items())
         return losses

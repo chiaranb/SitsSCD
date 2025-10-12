@@ -30,12 +30,14 @@ class SitsScdModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
         logits = pred["logits"]  # B x T x C x H x W
-        logits = logits.mean(dim=[-2,-1])  # B x T x C
-        pred["pred"] = torch.argmax(logits, dim=2) # B x T
+        logits = logits.mean(dim=[-2, -1])  # B x T x C
+        pred["pred"] = torch.argmax(logits, dim=2)  # B x T
         gt = batch["gt"]  # B x T x H x W
-        gt = gt.float().mean(dim=[-2,-1]).round().long()
-        loss = self.loss(logits, gt, average=True)
-        for metric_name, metric_value in loss.items():
+        gt = gt.float().mean(dim=[-2, -1]).round().long()
+        loss_dict = self.loss({"logits": logits}, {"gt": gt}, average=True)
+        loss = loss_dict["loss"]
+
+        for metric_name, metric_value in loss_dict.items():
             self.log(
                 f"train/{metric_name}",
                 metric_value,
@@ -46,40 +48,58 @@ class SitsScdModel(L.LightningModule):
 
         # Log images at specified intervals
         if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
-            pred["pred"] = torch.argmax(pred["logits"], dim=2)
-            self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="train", dataset_type=self.dataset, max_samples=self.global_batch_size)
-        
+            self.log_wandb_images(
+                pred_pixel=pred["pred"],
+                gt=batch["gt"],
+                batch_idx=batch_idx,
+                data=batch["data"],
+                prefix="train",
+                dataset_type=self.dataset,
+                max_samples=self.global_batch_size
+            )
+
         freqs = self.class_distribution.compute()
         for cls_id, freq in enumerate(freqs):
             if cls_id != self.ignore_index:
-                    self.log(f"train_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+                self.log(f"train_freq/{CLASS_NAMES[cls_id]}", freq.item(),
+                        on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         self.class_distribution.reset()
-        
+
         return loss
     
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         pred = self.model(batch)
         logits = pred["logits"]  # B x T x C x H x W
-        logits = logits.mean(dim=[-2,-1])  # B x T x C
-        pred["pred"] = torch.argmax(logits, dim=2) # B x T
+        logits = logits.mean(dim=[-2, -1])  # B x T x C
+        pred["pred"] = torch.argmax(logits, dim=2)  # B x T
         gt = batch["gt"]  # B x T x H x W
-        gt = gt.float().mean(dim=[-2,-1]).round().long()  # B x T
+        gt = gt.float().mean(dim=[-2, -1]).round().long()  # B x T
         loss = self.loss(pred, batch, average=True)["loss"]
+
         self.val_metrics.update(pred["pred"], gt)
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
-        
-        with torch.no_grad() :
-            values, counts = torch.unique(batch["gt"], return_counts=True)
-            total_pixels = counts.sum().item()
-            freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
-            for cls_id, freq in freqs.items():
-                class_name = CLASS_NAMES[cls_id]
-                self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-                        
-        # Log images at specified intervals
+
+        # Frequenze classi
+        values, counts = torch.unique(batch["gt"], return_counts=True)
+        total_pixels = counts.sum().item()
+        freqs = {int(v): (c.item() / total_pixels) * 100 for v, c in zip(values, counts) if v != self.ignore_index}
+        for cls_id, freq in freqs.items():
+            class_name = CLASS_NAMES[cls_id]
+            self.log(f"val_freq/{class_name}", freq, on_step=False, on_epoch=True,
+                    prog_bar=False, sync_dist=True)
+
+        # Log immagini
         if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0) and self.global_rank == 0:
-            self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="val", dataset_type=self.dataset, max_samples=self.global_batch_size)
+            self.log_wandb_images(
+                pred_pixel=pred["pred"],
+                gt=batch["gt"],
+                batch_idx=batch_idx,
+                data=batch["data"],
+                prefix="val",
+                dataset_type=self.dataset,
+                max_samples=self.global_batch_size
+            )
     
     def on_validation_epoch_end(self):
         computed = self.val_metrics.compute()
@@ -131,19 +151,37 @@ class SitsScdModel(L.LightningModule):
     
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
+        # --- Forward ---
         pred = self.model(batch)
-        logits = pred["logits"]  # B x T x C x H x W
-        logits = logits.mean(dim=[-2,-1])  # B x T x C
-        pred["pred"] = torch.argmax(logits, dim=2) # B x T
+        logits = pred["logits"]  # [B, T, C, H, W]
 
-        # Enable to save predictions local
-        #self.save_predictions(pred["pred"], batch_idx)
-        gt = batch["gt"]  # B x T x H x W
-        gt = gt.float().mean(dim=[-2,-1]).round().long()  # B x T
-        self.test_metrics.update(pred["pred"], gt)
-        self.class_distribution.update(batch["gt"])
-        
-        self.log_wandb_images(pred["pred"], batch["gt"], batch_idx, batch["data"], prefix="test", dataset_type=self.dataset, max_samples=self.global_batch_size)
+        # --- 1️⃣ Predizione pixel-wise ---
+        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
+
+        # --- 2️⃣ Predizione aggregata (una classe per timestep) ---
+        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
+        pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
+
+        # --- Ground truth ---
+        gt = batch["gt"]  # [B, T, H, W]
+        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+
+        # --- Aggiornamento metriche ---
+        self.test_metrics.update(pred_class, gt_avg)
+        self.class_distribution.update(gt)
+
+        # --- Logging immagini su W&B (logga TUTTI i batch) ---
+        if self.global_rank == 0:  # evita duplicati tra GPU
+            self.log_wandb_images(
+                pred_pixel=pred_pixel,
+                pred_class=pred_class,
+                gt=gt,
+                data=batch["data"],
+                batch_idx=batch_idx,
+                prefix="test",
+                dataset_type=self.dataset,
+                max_samples=self.global_batch_size
+            )
     
     def on_test_epoch_end(self):
         metrics = self.test_metrics.compute()
@@ -232,80 +270,114 @@ class SitsScdModel(L.LightningModule):
               # Skip non-scalars (like confusion matrices) 
               print(f"Skipping {prefix}/{name} from self.log() because it is type {type(value)}")
 
-    def log_wandb_images(self, preds, gt, batch_idx, data, prefix="test", dataset_type="Muds", max_samples=4):
-        B = preds.shape[0]
+    @torch.no_grad()
+    def log_wandb_images(self, pred_pixel, pred_class, gt, data, batch_idx, prefix="test", dataset_type="DynamicEarthNet", max_samples=4):
+        """
+        Log pixel-wise prediction, GT, input RGB/IR, and class timeline.
+        Each wandb.Image now includes a caption with batch and sample info.
+        """
+        B = pred_pixel.shape[0]
         num_samples = min(B, max_samples)
 
         for b in range(num_samples):
-            preds_np = preds[b].cpu().numpy() if prefix in ["val", "test"] else None
-            gt_np = gt[b].cpu().numpy() if (gt is not None and len(gt) > 0) else None
+            pred_px_np = pred_pixel[b].cpu().numpy()  # [T, H, W]
+            pred_cls_np = pred_class[b].cpu().numpy()  # [T]
+            gt_px_np = gt[b].cpu().numpy()  # [T, H, W]
             input_np = data[b].cpu().numpy()  # [T, C, H, W]
 
-            # For DynamicEarthNet: split RGB and IR channels
+            # --- Prepara RGB/IR ---
             if dataset_type == "DynamicEarthNet":
-                input_rgb = input_np[:, :3, :, :]  # [T, 3, H, W]
-                input_ir = input_np[:, 3:, :, :]   # [T, 1, H, W]
+                input_rgb = input_np[:, :3, :, :]
+                input_ir = input_np[:, 3:, :, :]
             else:
-                input_rgb = input_np  # MUDS is già RGB
+                input_rgb = input_np
                 input_ir = None
 
-            # Helper: normalize image
             def normalize_img(img):
-                img = np.moveaxis(img, 0, -1)  # C,H,W → H,W,C
+                img = np.moveaxis(img, 0, -1)
                 img_vis = (img - img.min()) / (img.max() - img.min() + 1e-5)
                 return (img_vis * 255).astype(np.uint8)
 
-            # Format image (colormap)
-            def format_image(img_array):
-                if dataset_type == "Muds":
-                    return to_binary_colormap_image(img_array)
-                elif dataset_type == "DynamicEarthNet":
-                    return to_class_colormap_image(img_array)
-                return None
-
-            # --- Log RGB input ---
+            # --- Log input RGB ---
             input_images = {
-                f"{prefix}_input/t{t:02d}": wandb.Image(normalize_img(input_rgb[t]), caption=f"Batch {batch_idx} Sample {b}")
+                f"{prefix}_input/sample{b}_t{t:02d}": wandb.Image(
+                    normalize_img(input_rgb[t]),
+                    caption=f"batch={batch_idx} | sample={b} | timestep={t}"
+                )
                 for t in range(input_rgb.shape[0])
             }
             wandb.log(input_images)
 
-            # --- Log IR input (solo per DynamicEarthNet) ---
+            # --- Log IR (solo se presente) ---
             if input_ir is not None:
                 input_ir_images = {
-                    f"{prefix}_input_infrared/t{t:02d}": wandb.Image(normalize_img(np.repeat(input_ir[t], 3, axis=0)),
-                                                                            caption=f"Batch {batch_idx} Sample {b}")
+                    f"{prefix}_input_infrared/sample{b}_t{t:02d}": wandb.Image(
+                        normalize_img(np.repeat(input_ir[t], 3, axis=0)),
+                        caption=f"batch={batch_idx} | sample={b} | timestep={t}"
+                    )
                     for t in range(input_ir.shape[0])
                 }
                 wandb.log(input_ir_images)
 
-            # --- Log predictions ---
-            if preds_np is not None:            
-                pred_images = {
-                    f"{prefix}_pred/t{t:02d}": wandb.Image(format_image(preds_np[t]), caption=f"Batch {batch_idx} Sample {b}")
-                    for t in range(preds_np.shape[0])
-                }
-                wandb.log(pred_images)
-
-            # --- Log ground truth ---
-            if gt_np is not None:
-                gt_images = {}
-                for t in range(gt_np.shape[0]):
-                    img_fmt = format_image(gt_np[t])
-                    if img_fmt is not None:
-                        gt_images[f"{prefix}_gt/t{t:02d}"] = wandb.Image(
-                            img_fmt, caption=f"Batch {batch_idx} Sample {b}"
-                        )
-                if gt_images:
-                    wandb.log(gt_images)
-
-            # --- Log temporal stats ---
-            """temporal_images = {
-                f"{prefix}_temporal/sample{b}_mean": wandb.Image(format_image(np.mean(preds_np, axis=0)), caption=f"Batch {batch_idx} Sample {b}"),
-                f"{prefix}_temporal/sample{b}_std": wandb.Image(format_image(np.std(preds_np, axis=0)), caption=f"Batch {batch_idx} Sample {b}"),
-                f"{prefix}_temporal/sample{b}_change": wandb.Image(format_image(preds_np[-1] - preds_np[0]), caption=f"Batch {batch_idx} Sample {b}")
+            # --- Log predizioni pixel-wise ---
+            pred_images = {
+                f"{prefix}_pred_pixel/sample{b}_t{t:02d}": wandb.Image(
+                    to_class_colormap_image(pred_px_np[t]),
+                    caption=f"batch={batch_idx} | sample={b} | timestep={t}"
+                )
+                for t in range(pred_px_np.shape[0])
             }
-            wandb.log(temporal_images) """
+            wandb.log(pred_images)
+
+            # --- Log ground truth pixel-wise ---
+            gt_images = {
+                f"{prefix}_gt_pixel/sample{b}_t{t:02d}": wandb.Image(
+                    to_class_colormap_image(gt_px_np[t]),
+                    caption=f"batch={batch_idx} | sample={b} | timestep={t} | ground truth"
+                )
+                for t in range(gt_px_np.shape[0])
+            }
+            wandb.log(gt_images)
+
+            # --- Grafico temporale classi aggregate ---
+            fig, ax = plt.subplots(figsize=(4.2, 2.3), dpi=120)
+
+            timesteps = np.arange(len(pred_cls_np))
+            gt_cls_np = gt_px_np.mean(axis=(1, 2)).round().astype(int)
+
+            # Linee di sfondo
+            ax.set_axisbelow(True)
+            ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+            ax.xaxis.grid(True, linestyle='--', alpha=0.1)
+
+            # Linee predizione e ground truth
+            ax.plot(timesteps, gt_cls_np, marker='s', label='GT', color='tab:red', linewidth=1)
+            ax.plot(timesteps, pred_cls_np, marker='o', label='Pred', color='tab:blue', linewidth=1, alpha=0.85)
+
+            # Etichette e assi
+            ax.set_title(f"Sample {b} | Batch {batch_idx}", fontsize=9)
+            ax.set_xlabel("Timestep", fontsize=8)
+            ax.set_ylabel("Class", fontsize=8)
+
+            # Mostra tutti i timestep sull’asse x
+            ax.set_xticks(timesteps)
+            ax.set_xticklabels([str(t) for t in timesteps], fontsize=7)
+
+            # Classi sull’asse y
+            ax.set_yticks(np.arange(len(CLASS_NAMES)))
+            ax.set_yticklabels(CLASS_NAMES, rotation=30, fontsize=7)
+
+            # Stile generale
+            ax.tick_params(axis='y', labelsize=7)
+            ax.legend(fontsize=7, loc='upper right', frameon=False)
+            plt.tight_layout()
+
+            # Log su wandb
+            wandb.log({
+                f"{prefix}_timeline/sample{b}": wandb.Image(
+                    fig                )
+            })
+            plt.close(fig)
 
 
 class ClassDistribution(Metric):
