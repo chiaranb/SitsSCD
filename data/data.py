@@ -126,13 +126,13 @@ class SitsDataset(Dataset):
         data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j)
         data = self.normalize(data)
         positions = torch.tensor(days, dtype=torch.long)
-        print(f"Data shape: {data.shape}, GT shape: {gt.shape}, Positions shape: {positions.shape}, Idx: {sits_number}, Sits_id: {sits_id}")
+        #print(f"Data shape: {data.shape}, GT shape: {gt.shape}, Positions shape: {positions.shape}, Idx: {sits_number}, Sits_id: {sits_id}")
         output = {"data": data, "gt": gt.long(), "positions": positions, "sits_id": sits_number, "idx": i}
         
-        
-        save_dir = "/teamspace/studios/this_studio/SitsSCD/labels_embeddings"
-        os.makedirs(save_dir, exist_ok=True)  
-        np.save(join(save_dir, f"{sits_number}_{i}.npy"), gt.numpy())
+        # Save gt
+        #save_dir = "/teamspace/studios/this_studio/SitsSCD/labels_embeddings"
+        #os.makedirs(save_dir, exist_ok=True)  
+        #np.save(join(save_dir, f"{sits_number}_{i}.npy"), gt.numpy())
         return output
 
     def load_ground_truth(self, split):
@@ -150,7 +150,7 @@ class SitsDataset(Dataset):
         for sits in range(num_sits):
             gt[sits] = torch.tensor(np.load(join(self.gt_folder, f'{sits_ids[sits]}.npy')), dtype=torch.int8)
         end_time = time.time()
-        print("Ground truth shape:", gt.shape)
+        #("Ground truth shape:", gt.shape)
         print(f"Loading {split} ground truth took {(end_time - start_time):.2f} seconds")
         return gt, sits_ids
 

@@ -8,13 +8,14 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from models.networks.multiutae import MultiUTAE  
 
-
 class MultiUTAETemporalExtractor(nn.Module):
     """
-    Estrae embeddings da MultiUTAE mantenendo la dimensione temporale (B x T x C).
+    Estrae embeddings temporali da MultiUTAE, mantenendo la dimensione temporale (B x T x C),
+    e aggiunge le label calcolate come classe più frequente nella patch.
     """
     def __init__(self, utae: nn.Module, pool='avg'):
         super().__init__()
@@ -23,37 +24,60 @@ class MultiUTAETemporalExtractor(nn.Module):
         self.pool = pool
 
     def forward(self, batch):
-        x = batch["data"].float()      # B x T x C x H x W
-        batch_positions = batch["positions"]
+        x = batch["data"].float()       # [B, T, C, H, W]
+        batch_positions = batch["positions"].long()  # timestamps
         sits_id = batch["sits_id"]
         idx = batch["idx"]
-        B, T, C, H, W = x.shape
-        print(f"Input shape: {x.shape}")
+        gt = batch["gt"]                # [B, T, H, W]
 
-        # Pad mask
-        pad_mask = ((x == self.ut.pad_value).all(dim=-1).all(dim=-1).all(dim=-1))  # BxT
+        # --- Mask di padding ---
+        pad_mask = ((x == self.ut.pad_value).all(dim=-1).all(dim=-1).all(dim=-1))  # [B, T]
+
+        # --- Forward encoder spaziale ---
         out = self.ut.in_conv.smart_forward(x)
         feature_maps = [out]
-        
-        # Spatial encoder
         for i in range(self.ut.n_stages - 1):
             out = self.ut.down_blocks[i].smart_forward(feature_maps[-1])
             feature_maps.append(out)
-        feat_last = feature_maps[-1]  # B x T x Cf x Hf x Wf
+        feat_last = feature_maps[-1]  # [B, T, Cf, Hf, Wf]
 
-        # Temporal encoder
+        # --- Encoder temporale ---
         out_temporal, att = self.ut.temporal_encoder(
             feat_last, batch_positions=batch_positions, pad_mask=pad_mask
         )
 
-        # Pooling spaziale per timestep
+        # --- Pooling spaziale per timestep ---
         if self.pool == 'avg':
-            emb = out_temporal.mean(dim=[-2, -1])  # B x T x Cf
+            emb = out_temporal.mean(dim=[-2, -1])  # [B, T, Cf]
         else:
-            emb = out_temporal.amax(dim=[-2, -1])  # B x T x Cf
+            emb = out_temporal.amax(dim=[-2, -1])  # [B, T, Cf]
 
-        return {"embeddings": emb, "pad_mask": pad_mask, "att": att, "sits_id": sits_id, "idx": idx, "positions": batch_positions}
+        # --- Calcolo label per timestep: moda della GT (classe più frequente nella patch) ---
+        labels = self.compute_patch_majority_label(gt, num_classes=6)  # [B, T]
 
+        return {
+            "embeddings": emb,               # [B, T, C]
+            "labels": labels,                # [B, T]
+            "sits_id": sits_id,
+            "idx": idx,
+            "positions": batch_positions,    # [B, T]
+            "gt": gt                         # [B, T, H, W]
+        }
+
+    @staticmethod
+    def compute_patch_majority_label(gt, num_classes):
+        """
+        Calcola per ogni patch (B,T,H,W) la classe più frequente.
+        Restituisce tensor [B,T].
+        """
+        B, T, H, W = gt.shape
+        gt_flat = gt.view(B, T, H * W)
+        labels = torch.zeros((B, T), dtype=torch.long, device=gt.device)
+        for b in range(B):
+            for t in range(T):
+                bincount = torch.bincount(gt_flat[b, t], minlength=num_classes)
+                labels[b, t] = bincount.argmax()
+        return labels
 
 def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
     """
@@ -65,24 +89,22 @@ def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
         embeddings = embeddings.detach().cpu().numpy()
 
     B, T, C = embeddings.shape
-    print(f"Salvataggio embeddings: {B} samples, {T} timesteps, {C} features ciascuno.")
-
     rows = []
     for i in range(B):
         meta = batch_meta[i]
         for t in range(T):
+            timestamp = int(meta["positions"][t])  # timestamp intero
             row = {
                 "sits_id": meta["sits_id"],
                 "idx": int(meta["idx"]),
-                "timestamp": t,
+                "timestamp": timestamp,
+                "label": int(meta["label"][t]),
             }
-            for k in range(C):
-                row[f"emb_{k}"] = float(embeddings[i, t, k])
+            row.update({f"emb_{k}": float(embeddings[i, t, k]) for k in range(C)})
             rows.append(row)
 
     df = pd.DataFrame(rows)
-    header = True if mode == 'w' else False
-    df.to_csv(csv_path, index=False, mode=mode, header=header)
+    df.to_csv(csv_path, index=False, mode=mode, header=(mode == 'w'))
 
 
 def extract_embeddings_from_dataloader(dataloader, utae_model, csv_path, pool='avg'):
@@ -91,32 +113,46 @@ def extract_embeddings_from_dataloader(dataloader, utae_model, csv_path, pool='a
     """
     extractor = MultiUTAETemporalExtractor(utae_model, pool=pool)
     extractor.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    extractor.to(device)
     mode = 'w'
+    
+    progress_bar = tqdm(dataloader, desc="Estrazione embeddings", unit="batch", ncols=100)
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in progress_bar:
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             out = extractor(batch)
-            emb = out['embeddings']  # B x T x F
-            sits_id = out['sits_id'].cpu().numpy()  # B
-            idxs = out["idx"].detach().cpu().numpy()  # B
-            positions = out["positions"].detach().cpu().numpy()  # B x T
+
+            emb = out['embeddings']  # [B, T, C]
+            labels = out['labels'].cpu().numpy()  # [B, T]
+            sits_id = out['sits_id'].cpu().numpy()  # [B]
+            idxs = out['idx'].cpu().numpy()  # [B]
+            positions = out['positions'].cpu().numpy()  # [B, T]
 
             # Prepara i metadati per ogni sample
             batch_meta = [
-                {"sits_id": int(sits_id[i]), "idx": int(idxs[i]), "positions": positions[i]} for i in range(len(idxs))
+                {"sits_id": int(sits_id[i]), "idx": int(idxs[i]), "positions": positions[i], "label": labels[i]} 
+                for i in range(len(idxs))
             ]
 
             save_temporal_embeddings(batch_meta, emb, csv_path, mode=mode)
             mode = 'a'  # dopo il primo batch, append
 
+            progress_bar.set_postfix({
+                "batch_size": emb.shape[0],
+                "timesteps": emb.shape[1],
+                "features": emb.shape[2]
+            })
+    progress_bar.close()
 
 if __name__ == "__main__":
     import argparse
     from data.data import DynamicEarthNet
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv_path", type=str, default="temporal_embeddings_test.csv", help="Path CSV output")
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--csv_path", type=str, default="embeddings_test.csv", help="Path CSV output")
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--pool", type=str, choices=['avg', 'max'], default='avg')
     args = parser.parse_args()
 
@@ -126,6 +162,7 @@ if __name__ == "__main__":
         split='train',
         domain_shift_type='temporal',
         train_length=12,
+        img_size=64,
         date_aug_range=0
     )
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
