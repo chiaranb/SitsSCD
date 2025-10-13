@@ -34,7 +34,13 @@ class SitsScdModel(L.LightningModule):
         logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
 
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+        gt_avg = torch.stack([
+            torch.tensor([
+                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
+                for t in range(gt.shape[1])
+            ])
+            for b in range(gt.shape[0])
+        ]) # [B, T]
 
         loss_dict = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)
         loss = loss_dict["loss"]
@@ -88,7 +94,13 @@ class SitsScdModel(L.LightningModule):
         pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
 
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+        gt_avg = torch.stack([
+            torch.tensor([
+                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
+                for t in range(gt.shape[1])
+            ])
+            for b in range(gt.shape[0])
+        ])  # [B, T]
 
         loss = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)["loss"]
 
@@ -170,7 +182,13 @@ class SitsScdModel(L.LightningModule):
         pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
 
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = gt.float().mean(dim=[-2, -1]).round().long()  # [B, T]
+        gt_avg = torch.stack([
+            torch.tensor([
+                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
+                for t in range(gt.shape[1])
+            ])
+            for b in range(gt.shape[0])
+        ]) # [B, T]
 
         self.test_metrics.update(pred_class, gt_avg)
         self.class_distribution.update(gt)
@@ -349,7 +367,10 @@ class SitsScdModel(L.LightningModule):
                 fig, ax = plt.subplots(figsize=(4.2, 2.3), dpi=120)
 
                 timesteps = np.arange(len(pred_cls_np))
-                gt_cls_np = gt_px_np.mean(axis=(1, 2)).round().astype(int)
+                gt_cls_np = np.array([
+                    np.bincount(gt_px_np[t].astype(int).ravel()).argmax()
+                    for t in range(gt_px_np.shape[0])
+                ])
 
                 ax.set_axisbelow(True)
                 ax.yaxis.grid(True, linestyle='--', alpha=0.3)
