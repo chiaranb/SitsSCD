@@ -1,9 +1,13 @@
 from capymoa.stream import CSVStream
-from capymoa.classifier import HoeffdingTree, NaiveBayes, SGDClassifier, KNN
+from capymoa.classifier import (
+    HoeffdingTree, NaiveBayes, SGDClassifier, KNN,
+    HoeffdingAdaptiveTree, LeveragingBagging, MajorityClass
+)
 from capymoa.evaluation import ClassificationEvaluator
-import math
+from tqdm import tqdm
+import pandas as pd
 
-CSV_PATH = "pixelwise_embeddings_test_2.csv"
+CSV_PATH = "embeddings_sorted.csv"
 
 # Dizionario dei modelli da testare
 MODELS = {
@@ -11,9 +15,13 @@ MODELS = {
     "NaiveBayes": NaiveBayes,
     "SGD": lambda schema: SGDClassifier(schema=schema, loss="log_loss"),
     "KNN": lambda schema: KNN(schema=schema, k=5, window_size=1000),
+    "HoeffdingAdaptiveTree": HoeffdingAdaptiveTree,
+    "LeveragingBagging": LeveragingBagging,
+    "MajorityClass": MajorityClass,
 }
 
 results = {}
+n_instances = sum(1 for _ in open(CSV_PATH)) - 1  # righe totali nel CSV
 
 for model_name, model_class in MODELS.items():
     print(f"\n=== Training {model_name} ===")
@@ -28,27 +36,40 @@ for model_name, model_class in MODELS.items():
 
     # Istanzia modello
     model = model_class(schema) if callable(model_class) else model_class(schema)
-
     evaluator = ClassificationEvaluator(schema=schema, window_size=1000)
 
-    i = 0
-    while stream.has_more_instances():
+    # tqdm con aggiornamento dinamico
+    pbar = tqdm(range(n_instances), desc=f"{model_name}", ncols=100)
+
+    for i in pbar:
+        if not stream.has_more_instances():
+            break
         instance = stream.next_instance()
         prediction = model.predict(instance)
         evaluator.update(instance.y_index, prediction)
         model.train(instance)
 
-        i += 1
-        if i % 1000 == 0:
-            print(f"[{i}] Acc: {evaluator.accuracy():.4f}")
+        # Mostra accuracy ogni 1000 istanze
+        if (i + 1) % 1000 == 0:
+            acc = evaluator.accuracy()
+            pbar.set_postfix({"acc": f"{acc:.4f}"})
 
-    # Salva risultati finali
-    acc = evaluator.accuracy()
-    kappa = evaluator.kappa()
-    results[model_name] = {"accuracy": acc, "kappa": kappa}
+    pbar.close()
 
-    print(f"Final {model_name} -> Acc: {acc:.4f}, Kappa: {kappa:.4f}")
+    # Metriche finali
+    metrics = {
+        "accuracy": evaluator.accuracy(),
+        "kappa": evaluator.kappa(),
+        "precision": evaluator.precision(),
+        "recall": evaluator.recall(),
+        "f1": evaluator.f1(),
+        "gmean": evaluator.gmean(),
+        "balanced_acc": evaluator.balanced_accuracy(),
+    }
+    results[model_name] = metrics
+    print(f"Final {model_name} -> Acc: {metrics['accuracy']:.4f}, F1: {metrics['f1']:.4f}, Kappa: {metrics['kappa']:.4f}")
 
-print("\n=== Summary ===")
-for model_name, metrics in results.items():
-    print(f"{model_name}: Acc={metrics['accuracy']:.4f}, Kappa={metrics['kappa']:.4f}")
+# Salvataggio risultati
+df = pd.DataFrame(results).T
+df.to_csv("streaming_results.csv", index_label="model")
+print("\n✅ Risultati salvati in 'streaming_results.csv'")

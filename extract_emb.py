@@ -175,7 +175,10 @@ if __name__ == "__main__":
     utae_model.eval()
 
     extract_embeddings_from_dataloader(dataloader, utae_model, args.csv_path, pool=args.pool)
-    # Count total embeddings
+    
     df = pd.read_csv(args.csv_path)
+    df.sort_values(by=["timestamp", "idx", "sits_id"], inplace=True)
+    df.to_csv(args.csv_path, index=False)
+    
     print(f"Totale embeddings estratti: {len(df)}")
     print(f"Embeddings temporali salvati su {args.csv_path}")
