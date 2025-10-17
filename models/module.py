@@ -21,31 +21,34 @@ class SitsScdModel(L.LightningModule):
         self.loss = instantiate(cfg.loss.instance)
         self.ignore_index = self.loss.ignore_index
         self.val_metrics = instantiate(cfg.val_metrics)
+        self.pixel_val_metrics = instantiate(cfg.pixel_val_metrics)
         self.test_metrics = instantiate(cfg.test_metrics)
+        self.pixel_test_metrics = instantiate(cfg.pixel_test_metrics)
         self.dataset = self.cfg.dataset.name
         self.global_batch_size = self.cfg.dataset.global_batch_size
         self.logged_val_images = False
         self.class_distribution = ClassDistribution(num_classes=len(CLASS_NAMES), ignore_index=self.ignore_index)
+        self.patch_class_distribution = PatchClassDistribution(num_classes=len(CLASS_NAMES), ignore_index=self.ignore_index)
+        
+    def calculate_mode(self, mask_tensor):
+        """Calculate the mode class for each time step in the mask tensor."""
+        # mask_tensor shape [B, T, H, W]
+        mask_cpu = mask_tensor.cpu()
+        mode_tensor = torch.stack([
+            torch.tensor([
+                torch.bincount(mask_cpu[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
+                for t in range(mask_tensor.shape[1])
+            ])
+            for b in range(mask_tensor.shape[0])
+        ])
+        return mode_tensor.to(self.device)
 
     def training_step(self, batch, batch_idx):
-        pred = self.model(batch)
-        logits = pred["logits"]  # [B, T, C, H, W]
-
-        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
-
+        pred = self.model(batch) # [B, T, C, H, W]
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = torch.stack([
-            torch.tensor([
-                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
-                for t in range(gt.shape[1])
-            ])
-            for b in range(gt.shape[0])
-        ]) # [B, T]
+        loss = self.loss(pred, batch, average=True)
 
-        loss_dict = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)
-        loss = loss_dict["loss"]
-
-        for metric_name, metric_value in loss_dict.items():
+        for metric_name, metric_value in loss.items():
             self.log(
                 f"train/{metric_name}",
                 metric_value,
@@ -55,6 +58,8 @@ class SitsScdModel(L.LightningModule):
             )
 
         self.class_distribution.update(gt)
+        gt_avg = self.calculate_mode(gt)  # [B, T]
+        self.patch_class_distribution.update(gt_avg)
         
         if batch_idx % self.cfg.logging.train_image_interval == 0 and self.global_rank == 0:
             self.log_wandb_images(
@@ -80,34 +85,40 @@ class SitsScdModel(L.LightningModule):
                     sync_dist=True,
                 )
         self.class_distribution.reset()
+        
+        patch_freqs = self.patch_class_distribution.compute()
+        for cls_id, freq in enumerate(patch_freqs):
+            if cls_id != self.ignore_index:
+                self.log(
+                    f"train_patch_freq/{CLASS_NAMES[cls_id]}",
+                    freq.item(),
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+        self.patch_class_distribution.reset()
 
         return loss
     
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
+        # Pixel-wise predictions
         pred = self.model(batch)
+        pred["pred"] = torch.argmax(pred["logits"], dim=2)  # [B, T, H, W]
+        loss = self.loss(pred, batch, average=True)["loss"]
+        self.pixel_val_metrics.update(pred["pred"], batch["gt"])
+        self.log("val_pixel/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
+        # Patch-wise predictions
         logits = pred["logits"]  # [B, T, C, H, W]
-
-        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
-
-        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
-        pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
-
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = torch.stack([
-            torch.tensor([
-                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
-                for t in range(gt.shape[1])
-            ])
-            for b in range(gt.shape[0])
-        ])  # [B, T]
-
-        loss = self.loss({"logits": logits_avg}, {"gt": gt_avg}, average=True)["loss"]
+        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
+        pred_class = self.calculate_mode(pred_pixel)  # [B, T]
+        gt_avg = self.calculate_mode(gt)  # [B, T]
 
         self.val_metrics.update(pred_class, gt_avg)
         self.class_distribution.update(gt)
-
-        self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
+        self.patch_class_distribution.update(gt_avg)
 
         if (not self.logged_val_images) and (batch_idx % self.cfg.logging.val_image_interval == 0) and self.global_rank == 0:
             self.log_wandb_images(
@@ -124,74 +135,114 @@ class SitsScdModel(L.LightningModule):
         return loss
     
     def on_validation_epoch_end(self):
+        # Log pixel-wise metrics
+        pixel_computed = self.pixel_val_metrics.compute()
+        self.log_metrics(pixel_computed, prefix="val_pixel")
+        # Log patch-wise metrics
         computed = self.val_metrics.compute()
-        self.log_metrics(computed, prefix="val")
+        self.log_metrics(computed, prefix="val_patch")
+
         self.logged_val_images = True  # Only log once per epoch
 
         if self.global_rank == 0:
             # Full-class confusion matrix
             if "confusion_matrix" in computed:
                 cm = computed["confusion_matrix"]
-                fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Validation Confusion Matrix Pixel Classification")
+                fig = plot_confusion_matrix(cm, self.val_metrics.class_names, title="Val Confusion Matrix Patch Classification")
                 wandb.log({
-                    "val_matrix/confusion_matrix_pixel_classification": wandb.Image(fig)
+                    "val_matrix/confusion_matrix_patch_classification": wandb.Image(fig)
                 })
                 plt.close(fig)
+            
+            if "confusion_matrix" in pixel_computed:
+                cm_pixel = pixel_computed["confusion_matrix"]
+                fig_pixel = plot_confusion_matrix(cm_pixel, self.pixel_val_metrics.class_names, title="Val Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "val_matrix/confusion_matrix_pixel_classification": wandb.Image(fig_pixel)
+                })
+                plt.close(fig_pixel)
 
             # Binary change detection confusion matrix
             if "confusion_matrix_change" in computed:
                 cm_change = computed["confusion_matrix_change"]
-                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Validation Change Confusion Matrix Pixel Classification")
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Val Change Confusion Matrix Patch Classification")
                 wandb.log({
-                    "val_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change),
+                    "val_matrix/confusion_matrix_change_patch_classification": wandb.Image(fig_change),
                 })
                 plt.close(fig_change)
+                
+            if "confusion_matrix_change" in pixel_computed:
+                cm_change_pixel = pixel_computed["confusion_matrix_change"]
+                fig_change_pixel = plot_confusion_matrix(cm_change_pixel, ["No Change", "Change"], title="Val Change Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "val_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change_pixel),
+                })
+                plt.close(fig_change_pixel)
 
             # Semantic change confusion matrix
             if "confusion_matrix_sc" in computed:
                 cm_sc = computed["confusion_matrix_sc"]
-                fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Validation Semantic Change Confusion Matrix Pixel Classification")
+                fig_sc = plot_confusion_matrix(cm_sc, self.val_metrics.class_names, title="Val Semantic Change Confusion Matrix Patch Classification")
                 wandb.log({
-                    "val_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc),
+                    "val_matrix/confusion_matrix_sc_patch_classification": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+                
+            if "confusion_matrix_sc" in pixel_computed:
+                cm_sc_pixel = pixel_computed["confusion_matrix_sc"]
+                fig_sc_pixel = plot_confusion_matrix(cm_sc_pixel, self.pixel_val_metrics.class_names, title="Val Semantic Change Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "val_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc_pixel),
+                })
+                plt.close(fig_sc_pixel)
+                
             if "confusion_matrix_iou" in computed:
                 cm_iou = computed["confusion_matrix_iou"]
-                fig_iou = plot_confusion_matrix(cm_iou, self.val_metrics.class_names, title="Validation IoU Confusion Matrix")
+                fig_iou = plot_confusion_matrix(cm_iou, self.val_metrics.class_names, title="Val IoU Confusion Matrix Patch Classification")
                 wandb.log({
-                    "val_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
+                    "val_matrix/confusion_matrix_iou_patch_classification": wandb.Image(fig_iou),
                 })
                 plt.close(fig_iou)
-        
+
+            if "confusion_matrix_iou" in pixel_computed:
+                cm_iou_pixel = pixel_computed["confusion_matrix_iou"]
+                fig_iou_pixel = plot_confusion_matrix(cm_iou_pixel, self.pixel_val_metrics.class_names, title="Val IoU Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "val_matrix/confusion_matrix_iou_pixel_classification": wandb.Image(fig_iou_pixel),
+                })
+                plt.close(fig_iou_pixel)
+
         freqs = self.class_distribution.compute()
         for cls_id, freq in enumerate(freqs):
             if cls_id != self.ignore_index:
                 self.log(f"val_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         self.class_distribution.reset()
+        
+        patch_freqs = self.patch_class_distribution.compute()
+        for cls_id, freq in enumerate(patch_freqs):
+            if cls_id != self.ignore_index:
+                self.log(f"val_patch_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.patch_class_distribution.reset()
 
         self.val_metrics.reset()
+        self.pixel_val_metrics.reset()
     
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
+        # Pixel-wise predictions
         pred = self.model(batch)
+        pred["pred"] = torch.argmax(pred["logits"], dim=2)  # [B, T, H, W]
+        self.pixel_test_metrics.update(pred["pred"], batch["gt"])
+        # Patch-wise predictions
         logits = pred["logits"]  # [B, T, C, H, W]
-
-        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
-
-        logits_avg = logits.mean(dim=[-2, -1])  # [B, T, C]
-        pred_class = torch.argmax(logits_avg, dim=2)  # [B, T]
-
         gt = batch["gt"]  # [B, T, H, W]
-        gt_avg = torch.stack([
-            torch.tensor([
-                torch.bincount(gt[b, t].flatten(), minlength=len(CLASS_NAMES)).argmax()
-                for t in range(gt.shape[1])
-            ])
-            for b in range(gt.shape[0])
-        ]) # [B, T]
+        pred_pixel = torch.argmax(logits, dim=2)  # [B, T, H, W]
+        pred_class = self.calculate_mode(pred_pixel)  # [B, T]
+        gt_avg = self.calculate_mode(gt)  # [B, T]
 
         self.test_metrics.update(pred_class, gt_avg)
         self.class_distribution.update(gt)
+        self.patch_class_distribution.update(gt_avg)
 
         if self.global_rank == 0:  
             self.log_wandb_images(
@@ -206,52 +257,92 @@ class SitsScdModel(L.LightningModule):
             )
     
     def on_test_epoch_end(self):
+        # Log pixel-wise metrics
+        pixel_metrics = self.pixel_test_metrics.compute()
+        self.log_metrics(pixel_metrics, prefix="test_pixel")
+        # Log patch-wise metrics
         metrics = self.test_metrics.compute()
-        
-        # Log scalar metrics
-        self.log_metrics(metrics, prefix="test")
+        self.log_metrics(metrics, prefix="test_patch")
 
         if self.global_rank == 0:
-            # Confusion matrices: log as images and tables
             if "confusion_matrix" in metrics:
                 cm = metrics["confusion_matrix"]
-                fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix Pixel Classification")
+                fig = plot_confusion_matrix(cm, self.test_metrics.class_names, title="Test Confusion Matrix Patch Classification")
                 wandb.log({
-                    "test_matrix/confusion_matrix_pixel_classification": wandb.Image(fig),
+                    "test_matrix/confusion_matrix_patch_classification": wandb.Image(fig),
                 })
                 plt.close(fig)
+            
+            if "confusion_matrix" in pixel_metrics:
+                cm_pixel = pixel_metrics["confusion_matrix"]
+                fig_pixel = plot_confusion_matrix(cm_pixel, self.pixel_test_metrics.class_names, title="Test Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "test_matrix/confusion_matrix_pixel_classification": wandb.Image(fig_pixel),
+                })
+                plt.close(fig_pixel)
 
             if "confusion_matrix_change" in metrics:
                 cm_change = metrics["confusion_matrix_change"]
-                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix Pixel Classification")
+                fig_change = plot_confusion_matrix(cm_change, ["No Change", "Change"], title="Test Change Confusion Matrix Patch Classification")
                 wandb.log({
-                    "test_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change),
+                    "test_matrix/confusion_matrix_change_patch_classification": wandb.Image(fig_change),
                 })
                 plt.close(fig_change)
+                
+            if "confusion_matrix_change" in pixel_metrics:
+                cm_change_pixel = pixel_metrics["confusion_matrix_change"]
+                fig_change_pixel = plot_confusion_matrix(cm_change_pixel, ["No Change", "Change"], title="Test Change Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "test_matrix/confusion_matrix_change_pixel_classification": wandb.Image(fig_change_pixel),
+                })
+                plt.close(fig_change_pixel)
 
             if "confusion_matrix_sc" in metrics:
                 cm_sc = metrics["confusion_matrix_sc"]
-                fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix Pixel Classification")
+                fig_sc = plot_confusion_matrix(cm_sc, self.test_metrics.class_names, title="Test Semantic Change Confusion Matrix Patch Classification")
                 wandb.log({
-                    "test_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc),
+                    "test_matrix/confusion_matrix_sc_patch_classification": wandb.Image(fig_sc),
                 })
                 plt.close(fig_sc)
+            
+            if "confusion_matrix_sc" in pixel_metrics:
+                cm_sc_pixel = pixel_metrics["confusion_matrix_sc"]
+                fig_sc_pixel = plot_confusion_matrix(cm_sc_pixel, self.pixel_test_metrics.class_names, title="Test Semantic Change Confusion Matrix Pixel Classification")
+                wandb.log({
+                    "test_matrix/confusion_matrix_sc_pixel_classification": wandb.Image(fig_sc_pixel),
+                })
+                plt.close(fig_sc_pixel)
                 
             if "confusion_matrix_iou" in metrics:
                 cm_iou = metrics["confusion_matrix_iou"]
-                fig_iou = plot_confusion_matrix(cm_iou, self.test_metrics.class_names, title="Test IoU Confusion Matrix")
+                fig_iou = plot_confusion_matrix(cm_iou, self.test_metrics.class_names, title="Test Patch IoU Confusion Matrix")
                 wandb.log({
                     "test_matrix/confusion_matrix_iou": wandb.Image(fig_iou),
                 })
                 plt.close(fig_iou)
+            
+            if "confusion_matrix_iou" in pixel_metrics:
+                cm_iou_pixel = pixel_metrics["confusion_matrix_iou"]
+                fig_iou_pixel = plot_confusion_matrix(cm_iou_pixel, self.pixel_test_metrics.class_names, title="Test Pixel IoU Confusion Matrix")
+                wandb.log({
+                    "test_matrix/confusion_matrix_iou_pixel": wandb.Image(fig_iou_pixel),
+                })
+                plt.close(fig_iou_pixel)
         
         freqs = self.class_distribution.compute()
         for cls_id, freq in enumerate(freqs):
             if cls_id != self.ignore_index:
                 self.log(f"test_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         self.class_distribution.reset()
+        
+        patch_freqs = self.patch_class_distribution.compute()
+        for cls_id, freq in enumerate(patch_freqs):
+            if cls_id != self.ignore_index:
+                self.log(f"test_patch_freq/{CLASS_NAMES[cls_id]}", freq.item(), on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.patch_class_distribution.reset()
 
         self.test_metrics.reset()
+        self.pixel_test_metrics.reset()
 
 
     def configure_optimizers(self):
@@ -428,6 +519,36 @@ class ClassDistribution(Metric):
     def compute(self):
         total = self.counts.sum().item()
         freqs = (self.counts.float() / total) * 100 if total > 0 else torch.zeros_like(self.counts, dtype=torch.float)
+        return freqs
+
+class PatchClassDistribution(Metric):
+    def __init__(self, num_classes: int, ignore_index: int = None, dist_sync_on_step=False):
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+
+        # accumulator for counts
+        self.add_state("counts", default=torch.zeros(num_classes, dtype=torch.long), dist_reduce_fx="sum")
+
+    def update(self, gt: torch.Tensor):
+        """
+        gt: Tensor of shape (B x T)
+        """
+        gt_flat = gt.flatten()
+
+        if self.ignore_index is not None:
+            mask = gt_flat != self.ignore_index
+            gt_flat = gt_flat[mask]
+
+        values, counts = torch.unique(gt_flat, return_counts=True)
+        for v, c in zip(values, counts):
+            self.counts[v] += c
+
+    def compute(self):
+        total = self.counts.sum().item()
+        freqs = (self.counts.float() / total) * 100 if total > 0 else torch.zeros_like(self.counts, dtype=torch.float)
+
         return freqs
 
 def get_parameter_names(model, forbidden_layer_types):

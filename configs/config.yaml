@@ -13,9 +13,21 @@ model:
     num_classes: ${dataset.num_classes}
     class_names: ${dataset.class_names}
     ignore_index: ${dataset.ignore_index}
+  
+  pixel_val_metrics:
+    _target_: metrics.scd_metrics.SCDMetric
+    num_classes: ${dataset.num_classes}
+    class_names: ${dataset.class_names}
+    ignore_index: ${dataset.ignore_index}
 
   test_metrics:
     _target_: metrics.scd_patch_metrics.SCDMetricPatch
+    num_classes: ${dataset.num_classes}
+    class_names: ${dataset.class_names}
+    ignore_index: ${dataset.ignore_index}
+  
+  pixel_test_metrics:
+    _target_: metrics.scd_metrics.SCDMetric
     num_classes: ${dataset.num_classes}
     class_names: ${dataset.class_names}
     ignore_index: ${dataset.ignore_index}

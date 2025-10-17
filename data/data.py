@@ -106,7 +106,7 @@ class SitsDataset(Dataset):
             months = list(range(12, 24))  # 12 months (2019)
             #print(f"Current sits number: {sits_number}, i: {i}")
             #print(f"Patch location: ({patch_loc_i}, {patch_loc_j})")
-            print(f"Using {num_patches_per_sits} patches per sits for validation/test (temporal)")
+            #print(f"Using {num_patches_per_sits} patches per sits for validation/test (temporal)")
         else: # validation/test with no domain shift
             num_patches_per_sits = 6
             sits_number = i // num_patches_per_sits
