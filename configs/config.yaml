@@ -77,7 +77,7 @@ checkpoints:
   _target_: pytorch_lightning.callbacks.ModelCheckpoint
   dirpath: ${root_dir}/checkpoints/${experiment_name}
   filename: 'best_miou_ckpt'
-  monitor: val/miou
+  monitor: val_pixel/miou
   save_last: True
   save_top_k: 1
   every_n_epochs: 1
@@ -95,7 +95,7 @@ checkpoints_all:
 
 early_stopping:
   _target_: pytorch_lightning.callbacks.EarlyStopping
-  monitor: val/miou
+  monitor: val_pixel/miou
   min_delta: 0.0
   patience: 5
   mode: max
