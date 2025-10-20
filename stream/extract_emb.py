@@ -1,7 +1,12 @@
 """
 Estrazione embeddings temporali da MultiUTAE
 e salvataggio in CSV con timestamp per approccio streaming / prequential.
+Funziona sia su CPU che su GPU automaticamente.
 """
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 import torch.nn as nn
@@ -11,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.networks.multiutae import MultiUTAE  
+
 
 class MultiUTAETemporalExtractor(nn.Module):
     """
@@ -25,9 +31,8 @@ class MultiUTAETemporalExtractor(nn.Module):
 
     def forward(self, batch):
         x = batch["data"].float()       # [B, T, C, H, W]
-        batch_positions = batch["positions"].long()  # timestamps
+        batch_positions = batch["positions"].long()  # [B, T]
         sits_id = batch["sits_id"]
-        idx = batch["idx"]
         gt = batch["gt"]                # [B, T, H, W]
 
         # --- Mask di padding ---
@@ -59,9 +64,7 @@ class MultiUTAETemporalExtractor(nn.Module):
             "embeddings": emb,               # [B, T, C]
             "labels": labels,                # [B, T]
             "sits_id": sits_id,
-            "idx": idx,
             "positions": batch_positions,    # [B, T]
-            "gt": gt                         # [B, T, H, W]
         }
 
     @staticmethod
@@ -79,7 +82,8 @@ class MultiUTAETemporalExtractor(nn.Module):
                 labels[b, t] = bincount.argmax()
         return labels
 
-def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
+
+def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a', start_patch_idx=0):
     """
     Salva embeddings temporali in CSV.
     batch_meta: lista di dict per ogni sample (lunghezza B)
@@ -90,61 +94,75 @@ def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a'):
 
     B, T, C = embeddings.shape
     rows = []
+    patch_id = start_patch_idx
+
     for i in range(B):
         meta = batch_meta[i]
         for t in range(T):
-            timestamp = int(meta["positions"][t])  # timestamp intero
+            timestamp = int(meta["positions"][t])
             row = {
                 "sits_id": meta["sits_id"],
-                "idx": int(meta["idx"]),
+                "patch_id": patch_id,
                 "timestamp": timestamp,
                 "label": int(meta["label"][t]),
             }
             row.update({f"emb_{k}": float(embeddings[i, t, k]) for k in range(C)})
             rows.append(row)
+        patch_id += 1
 
     df = pd.DataFrame(rows)
     df.to_csv(csv_path, index=False, mode=mode, header=(mode == 'w'))
+    return patch_id  
 
 
 def extract_embeddings_from_dataloader(dataloader, utae_model, csv_path, pool='avg'):
     """
     Itera sul DataLoader, estrae embeddings e salva in CSV.
     """
-    extractor = MultiUTAETemporalExtractor(utae_model, pool=pool)
-    extractor.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Esecuzione su: {device}")
+
+    utae_model.to(device)
+    utae_model.eval()
+
+    extractor = MultiUTAETemporalExtractor(utae_model, pool=pool)
     extractor.to(device)
+    extractor.eval()
+
     mode = 'w'
+    patch_id_counter = 0
     
     progress_bar = tqdm(dataloader, desc="Estrazione embeddings", unit="batch", ncols=100)
 
     with torch.no_grad():
         for batch in progress_bar:
+            # Sposta tutto su device
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            
             out = extractor(batch)
 
             emb = out['embeddings']  # [B, T, C]
             labels = out['labels'].cpu().numpy()  # [B, T]
             sits_id = out['sits_id'].cpu().numpy()  # [B]
-            idxs = out['idx'].cpu().numpy()  # [B]
             positions = out['positions'].cpu().numpy()  # [B, T]
 
-            # Prepara i metadati per ogni sample
+            # Prepara metadati per ogni sample
             batch_meta = [
-                {"sits_id": int(sits_id[i]), "idx": int(idxs[i]), "positions": positions[i], "label": labels[i]} 
-                for i in range(len(idxs))
+                {"sits_id": int(sits_id[i]), "positions": positions[i], "label": labels[i]} 
+                for i in range(len(sits_id))
             ]
 
-            save_temporal_embeddings(batch_meta, emb, csv_path, mode=mode)
+            patch_id_counter = save_temporal_embeddings(
+                batch_meta, emb, csv_path, mode=mode, start_patch_idx=patch_id_counter
+            )
             mode = 'a'  # dopo il primo batch, append
 
             progress_bar.set_postfix({
                 "batch_size": emb.shape[0],
                 "timesteps": emb.shape[1],
-                "features": emb.shape[2]
             })
     progress_bar.close()
+
 
 if __name__ == "__main__":
     import argparse
@@ -152,13 +170,13 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv_path", type=str, default="embeddings_test.csv", help="Path CSV output")
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--pool", type=str, choices=['avg', 'max'], default='avg')
     args = parser.parse_args()
 
-    # Istanzia dataset e DataLoader
+    # Dataset e dataloader
     dataset = DynamicEarthNet(
-        path="/teamspace/studios/this_studio/SitsSCD/datasets/DynamicEarthNet_Test",
+        path="/Users/chiaranguyen/Desktop/SitsSCD/datasets/DynamicEarthNet_Test",
         split='train',
         domain_shift_type='temporal',
         train_length=12,
@@ -172,13 +190,12 @@ if __name__ == "__main__":
         num_classes=6,         
         in_features=512
     )
-    utae_model.eval()
 
     extract_embeddings_from_dataloader(dataloader, utae_model, args.csv_path, pool=args.pool)
     
     df = pd.read_csv(args.csv_path)
-    df.sort_values(by=["timestamp", "idx", "sits_id"], inplace=True)
+    df.sort_values(by=["timestamp", "sits_id", "patch_id"], inplace=True)
     df.to_csv(args.csv_path, index=False)
     
-    print(f"Totale embeddings estratti: {len(df)}")
+    print(f"\nTotale embeddings estratti: {len(df)}")
     print(f"Embeddings temporali salvati su {args.csv_path}")
