@@ -3,3 +3,4 @@
 /checkpoints
 /wandb
 *.pyc
+/stream/wandb
