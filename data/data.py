@@ -123,7 +123,7 @@ class SitsDataset(Dataset):
         curr_sits_path = join(self.image_folder, sits_id)
         gt = self.gt[sits_number, months]
         data, days = self.load_data(sits_number, sits_id, months, curr_sits_path)
-        data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j)
+        #data, gt = self.transform(data, gt, patch_loc_i, patch_loc_j)
         data = self.normalize(data)
         positions = torch.tensor(days, dtype=torch.long)
         #print(f"Data shape: {data.shape}, GT shape: {gt.shape}, Positions shape: {positions.shape}, Idx: {sits_number}, Sits_id: {sits_id}")
@@ -146,7 +146,7 @@ class SitsDataset(Dataset):
             print(f"Loading {split} split without domain shift (same locations as train)")
         sits_ids.sort()
         num_sits = len(sits_ids) # number of SITS in the split
-        gt = torch.zeros((num_sits, 24, 1024, 1024), dtype=torch.int8) # [num_sits, T, H, W]
+        gt = torch.zeros((num_sits, 24, 224, 224), dtype=torch.int8) # [num_sits, T, H, W]
         for sits in range(num_sits):
             gt[sits] = torch.tensor(np.load(join(self.gt_folder, f'{sits_ids[sits]}.npy')), dtype=torch.int8)
         end_time = time.time()
@@ -193,7 +193,7 @@ class SitsDataset(Dataset):
         return months
     
     def get_months(self, sits_number):
-        months = self.month_list[sits_number][12:]
+        months = self.month_list[sits_number][:24]
         months = months[:self.train_length]
         return months
 
@@ -259,8 +259,8 @@ class DynamicEarthNet(SitsDataset):
             domain_shift_type="none",
             num_channels=4,
             num_classes=7,
-            img_size=128,
-            true_size=1024,
+            img_size=224,
+            true_size=224,
             train_length=6,
             date_aug_range=2
     ):
