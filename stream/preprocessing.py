@@ -1,56 +1,82 @@
 import pandas as pd
-from sklearn.random_projection import SparseRandomProjection
+import numpy as np
+from sklearn.random_projection import SparseRandomProjection, GaussianRandomProjection
+from sklearn.decomposition import IncrementalPCA
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-import joblib
+from sklearn.cluster import MiniBatchKMeans
+import umap
+import os
 
 # ---------------- Configuration ----------------
-INPUT_CSV = "embeddings_sorted.csv"          
-OUTPUT_CSV = "embeddings_test.csv"  
-N_COMPONENTS = 128                        
-RANDOM_STATE = 42                         
-LABEL_COLUMN = "label"                   
-EMB_PREFIX = "emb_"                      # prefix for embedding columns
-META_COLUMNS = ["timestamp"]   # metadata columns to normalize
+INPUT_CSV = "embeddings.csv"
+LABEL_COLUMN = "label"
+EMB_PREFIX = "emb_"
+META_COLUMNS = ["timestamp"]
+OUTPUT_DIR = "processed_embeddings"
+RANDOM_STATE = 42
+
+PROJECTIONS = {
+    "srp": SparseRandomProjection,      # Sparse Random Projection
+    "grp": GaussianRandomProjection,    # Gaussian Random Projection
+    "ipca": IncrementalPCA,             # Incremental PCA
+    "umap": umap.UMAP,                  # UMAP (non lineare)
+    #"kmeans": MiniBatchKMeans           # KMeans (embedding basato su centroidi)
+}
+
+SIZES = [256, 128, 64]
 
 # ---------------- 1. Load CSV ----------------
 print("Loading CSV...")
 df = pd.read_csv(INPUT_CSV)
 print(f"Dataset loaded: {df.shape[0]} instances, {df.shape[1]} features")
 
-# ---------------- 2. Remove rows with label == 6 ----------------
+# ---------------- 2. Remove unwanted label ----------------
 df = df[df[LABEL_COLUMN] != 6].reset_index(drop=True)
 print(f"After removing label=6: {df.shape[0]} instances remain")
 
-# ---------------- 3. Separate features ----------------
+# ---------------- 3. Separate embeddings ----------------
 embeddings_cols = [col for col in df.columns if col.startswith(EMB_PREFIX)]
 other_cols = [col for col in df.columns if col not in embeddings_cols]
 
-X_emb = df[embeddings_cols].values
-y = df[LABEL_COLUMN].values
+X_emb = df[embeddings_cols].values.astype(np.float32)
 print(f"Embeddings shape: {X_emb.shape}")
 
-# ---------------- 4. Dimensionality reduction for embeddings ----------------
-print(f"Sparse random projection to {N_COMPONENTS} dimensions...")
-srp = SparseRandomProjection(n_components=N_COMPONENTS, density='auto', random_state=RANDOM_STATE)
-X_proj = srp.fit_transform(X_emb)
-print(f"Reduction completed: {X_emb.shape[1]} → {X_proj.shape[1]} dimensions")
+# ---------------- 4. Normalize metadata ----------------
+#scaler_meta = MinMaxScaler()
+#df[META_COLUMNS] = scaler_meta.fit_transform(df[META_COLUMNS].values)
+#print("Metadata normalized")
 
-# ---------------- 5. Normalize embeddings ----------------
-print("Normalizing embeddings...")
-scaler_emb = StandardScaler()
-X_scaled = scaler_emb.fit_transform(X_proj)
-print("Embeddings normalized")
+# ---------------- 5. Create output directory ----------------
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ---------------- 6. Normalize metadata columns (timestamp, sits_id) ----------------
-print("Normalizing metadata columns (timestamp, sits_id)...")
-scaler_meta = MinMaxScaler()
-df[META_COLUMNS] = scaler_meta.fit_transform(df[META_COLUMNS].values)
-print("Metadata columns normalized")
+# ---------------- 6. Loop over projection methods and sizes ----------------
+for proj_name, proj_class in PROJECTIONS.items():
+    for n_components in SIZES:
+        print(f"\n=== {proj_name.upper()} projection to {n_components} dims ===")
 
-# ---------------- 7. Reconstruct final dataframe ----------------
-df_embeddings = pd.DataFrame(X_scaled.astype("float16"), columns=[f"emb_{i+1}" for i in range(N_COMPONENTS)])
-df_final = pd.concat([df[other_cols].reset_index(drop=True), df_embeddings], axis=1)
+        if proj_name == "kmeans":
+            # Embedding via distances to cluster centroids
+            model = proj_class(n_clusters=n_components, random_state=RANDOM_STATE, batch_size=2048)
+            model.fit(X_emb)
+            X_proj = model.transform(X_emb)
+        elif proj_name == "umap":
+            model = proj_class(n_components=n_components, random_state=RANDOM_STATE, n_neighbors=15, min_dist=0.1, metric="euclidean")
+            X_proj = model.fit_transform(X_emb)
+        else:
+            model = proj_class(n_components=n_components, random_state=RANDOM_STATE)
+            X_proj = model.fit_transform(X_emb)
 
-# ---------------- 8. Save preprocessed file ----------------
-df_final.to_csv(OUTPUT_CSV, index=False)
-print(f"Preprocessed file saved to '{OUTPUT_CSV}' ({df_final.shape[0]} rows, {df_final.shape[1]} features)")
+        # Normalize projected embeddings
+        scaler_emb = StandardScaler()
+        X_scaled = scaler_emb.fit_transform(X_proj)
+
+        # Build final dataframe
+        df_emb = pd.DataFrame(X_scaled.astype("float16"), columns=[f"emb_{i+1}" for i in range(n_components)])
+        df_final = pd.concat([df[other_cols].reset_index(drop=True), df_emb], axis=1)
+
+        # Save file
+        output_name = f"{OUTPUT_DIR}/emb_{proj_name}_{n_components}.csv"
+        df_final.to_csv(output_name, index=False)
+        print(f"Saved: {output_name} ({df_final.shape[0]} rows, {df_final.shape[1]} cols)")
+
+print("\nAll projections completed successfully.")

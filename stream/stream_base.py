@@ -17,7 +17,7 @@ from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 wandb.login()
 PROJECT_NAME = "capymoa-streaming"
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/processed_embeddings"
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
@@ -26,15 +26,7 @@ RANDOM_SEED = 42
 
 # ---------------- Define models ----------------
 MODELS = {
-    "AdaptiveRandomForest": lambda schema: AdaptiveRandomForestClassifier(schema, random_seed=RANDOM_SEED),
-    "LeveragingBagging": lambda schema: LeveragingBagging(schema, random_seed=RANDOM_SEED),
-    "OnlineBagging": lambda schema: OnlineBagging(schema, random_seed=RANDOM_SEED),
-    "OnlineAdwinBagging": lambda schema: OnlineAdwinBagging(schema, random_seed=RANDOM_SEED),
-    "OzaBoost": lambda schema: OzaBoost(schema, random_seed=RANDOM_SEED),
-    "OnlineSmoothBoost": lambda schema: OnlineSmoothBoost(schema, random_seed=RANDOM_SEED),
-    "StreamingGradientBoostedTrees": lambda schema: StreamingGradientBoostedTrees(schema, random_seed=RANDOM_SEED),
-    "StreamingRandomPatches": lambda schema: StreamingRandomPatches(schema, random_seed=RANDOM_SEED),
-    "SAMkNN": lambda schema: SAMkNN(schema, random_seed=RANDOM_SEED),
+    "SGD": SGDClassifier,
     }
 
 # ---------------- Helper: prequential loop ----------------

@@ -2,7 +2,7 @@ import wandb
 from capymoa.classifier import (
     HoeffdingTree, NaiveBayes, SGDClassifier, KNN, EFDT, WeightedkNN,
     HoeffdingAdaptiveTree, LeveragingBagging, OnlineAdwinBagging, StreamingGradientBoostedTrees, AdaptiveRandomForestClassifier,
-    DynamicWeightedMajority, OnlineBagging, OzaBoost, OnlineSmoothBoost, StreamingGradientBoostedTrees, StreamingRandomPatches, SAMkNN, CSMOTE
+    DynamicWeightedMajority, OnlineBagging, OzaBoost, OnlineSmoothBoost, StreamingRandomPatches, SAMkNN, CSMOTE
 )
 from capymoa.evaluation import ClassificationEvaluator
 from tqdm import tqdm
@@ -17,25 +17,61 @@ from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 wandb.login()
 PROJECT_NAME = "capymoa-streaming"
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/processed_embeddings"
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
 MONTHS_PER_YEAR = 12
 RANDOM_SEED = 42
 
-# ---------------- Define models ----------------
-MODELS = {
-    "AdaptiveRandomForest": lambda schema: AdaptiveRandomForestClassifier(schema, random_seed=RANDOM_SEED),
-    "LeveragingBagging": lambda schema: LeveragingBagging(schema, random_seed=RANDOM_SEED),
-    "OnlineBagging": lambda schema: OnlineBagging(schema, random_seed=RANDOM_SEED),
-    "OnlineAdwinBagging": lambda schema: OnlineAdwinBagging(schema, random_seed=RANDOM_SEED),
-    "OzaBoost": lambda schema: OzaBoost(schema, random_seed=RANDOM_SEED),
-    "OnlineSmoothBoost": lambda schema: OnlineSmoothBoost(schema, random_seed=RANDOM_SEED),
-    "StreamingGradientBoostedTrees": lambda schema: StreamingGradientBoostedTrees(schema, random_seed=RANDOM_SEED),
-    "StreamingRandomPatches": lambda schema: StreamingRandomPatches(schema, random_seed=RANDOM_SEED),
-    "SAMkNN": lambda schema: SAMkNN(schema, random_seed=RANDOM_SEED),
+# ---------------- Define Experiment Configurations ----------------
+# --- MODIFIED: Replaced MODELS with a list of experiment configs ---
+# Here you can define all the hyperparameter combinations you want to test.
+# 'name' will be used for logging.
+# 'model_class' is the classifier.
+# 'params' is a dictionary of hyperparameters to pass to the classifier.
+EXPERIMENT_CONFIGS = [
+    {
+        "name": "OnlineBagging_size_10",
+        "model_class": OnlineBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "OnlineBagging_size_30",
+        "model_class": OnlineBagging,
+        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "OnlineAdwinBagging_size_10",
+        "model_class": OnlineAdwinBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "OnlineAdwinBagging_size_30",
+        "model_class": OnlineAdwinBagging,
+        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "LeveragingBagging_size_10",
+        "model_class": LeveragingBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "LeveragingBagging_size_30",
+        "model_class": LeveragingBagging,
+        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "AdaptiveRandomForestClassifier_size_10",
+        "model_class": AdaptiveRandomForestClassifier,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "AdaptiveRandomForestClassifier_size_30",
+        "model_class": AdaptiveRandomForestClassifier,
+        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
     }
+]
 
 # ---------------- Helper: prequential loop ----------------
 def run_prequential_experiment(csv_path: str):
@@ -60,27 +96,34 @@ def run_prequential_experiment(csv_path: str):
 
     run_name_base = os.path.basename(csv_path).replace(".csv", "")
     
-    # This list will hold results from all models for this file
     results = []
 
-    # Loop through each model
-    for model_name, model_class in tqdm(MODELS.items(), desc=f"Models ({run_name_base})", leave=False):
+    # --- MODIFIED: Loop over the new config list ---
+    for config in tqdm(EXPERIMENT_CONFIGS, desc=f"Models ({run_name_base})", leave=False):
         
-        # --- MODIFICATION: wandb.init() is now INSIDE the loop ---
-        # This creates a NEW run for each model.
+        # Unpack the config
+        model_name = config["name"]
+        model_class = config["model_class"]
+        model_params = config["params"]
+        
         run = wandb.init(
             project=PROJECT_NAME,
-            # Give each run a unique name, e.g., "embedding_file_KNN"
             name=f"{run_name_base}_{model_name}", 
+            
+            # --- MODIFIED: Log all hyperparameters to wandb config ---
             config={
                 "embedding_file": csv_path, 
-                "model": model_name
+                "model_name": model_name,
+                "model_base": model_class.__name__,
+                **model_params  # This unpacks the 'params' dict into the config
             },
-            reinit=True # Important: Allows wandb.init() to be called in a loop
+            reinit=True
         )
 
         try:
-            model = model_class(schema)
+            # --- MODIFIED: Instantiate model with its parameters ---
+            model = model_class(schema=schema, **model_params)
+            
             std_eval = ClassificationEvaluator(schema=schema, window_size=1000)
             change_eval = StreamingChangeEvaluator(num_classes=NUM_CLASSES)
 
@@ -109,17 +152,14 @@ def run_prequential_experiment(csv_path: str):
                     model.train(instance)
 
                 # --- Log metrics ---
-                # This is now safe because each model has its own run,
-                # so the step `ts` is always increasing *for that run*.
                 metrics = change_eval.compute()
-                log_data = {f"{k}": v for k, v in metrics.items()} # No model prefix needed
+                log_data = {f"{k}": v for k, v in metrics.items()} 
                 log_data[f"std_accuracy"] = std_eval.accuracy()
                 log_data[f"std_precision"] = std_eval.precision()
                 log_data[f"std_recall"] = std_eval.recall()
                 log_data[f"std_f1"] = std_eval.f1_score()
                 log_data[f"std_kappa"] = std_eval.kappa()
                 
-                # Log to the model's dedicated run
                 wandb.log(log_data, step=ts) 
 
                 pbar.set_postfix({
@@ -130,7 +170,7 @@ def run_prequential_experiment(csv_path: str):
 
             # 3️⃣ Final metrics
             final_metrics = {
-                "embedding": run_name_base, # Use the base name
+                "embedding": run_name_base,
                 "model": model_name,
                 "accuracy": std_eval.accuracy(),
                 "precision": std_eval.precision(),
@@ -146,11 +186,8 @@ def run_prequential_experiment(csv_path: str):
             print("Skipping to next model...")
         
         finally:
-            # --- MODIFICATION: run.finish() is now INSIDE the loop ---
-            # This closes the run for the current model before starting the next one.
             run.finish()
 
-    # Return all results for this file
     return results
 
 # ---------------- Master loop over all embeddings ----------------
@@ -168,7 +205,10 @@ for file in tqdm(all_files, desc="Processing Embedding Files"):
     
     if res:
         df_batch = pd.DataFrame(res)
+        # Check if file exists to determine if we need to write the header
+        # This is important now that new param columns might be added
         write_header = not os.path.exists(OUTPUT_CSV_FILE)
+        
         df_batch.to_csv(
             OUTPUT_CSV_FILE, 
             mode='a',

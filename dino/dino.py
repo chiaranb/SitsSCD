@@ -133,23 +133,35 @@ class DINOv3TemporalExtractor(nn.Module):
 
 def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a', start_global_patch_id=0):
     """
-    Salva embeddings temporali (per patch 16x16) in CSV con patch_id univoco.
-    batch_meta: lista di dict per ogni sample (lunghezza B)
-    embeddings: tensor B x T x Num_Patches x C
-    start_global_patch_id: contatore globale per le patch 16x16
+    Salva embeddings temporali (per patch 16x16) in CSV.
+    MODIFICA: patch_id ora identifica la patch SPAZIALE (es. 0-195) 
+    all'interno di un sits_id, ed è lo stesso per tutti i timestamp.
     """
     if isinstance(embeddings, torch.Tensor):
         embeddings = embeddings.detach().cpu().numpy()
 
-    B, T, Num_Patches, C = embeddings.shape
+    B, T, Num_Patches, C = embeddings.shape # Num_Patches è 196
     rows = []
     
-    # Questo è il nostro contatore globale per le patch 16x16
-    global_patch_id = start_global_patch_id 
+    # Questo contatore ora tiene traccia dell'ID di base per la *prossima SITS*
+    current_global_sits_patch_base_id = start_global_patch_id 
 
-    for i in range(B):
+    for i in range(B): # Itera su ogni campione (SITS) nel batch
         meta = batch_meta[i] # Contiene sits_id, positions, e labels (array 2D T x 196)
         
+        # --- MODIFICA CHIAVE ---
+        # 1. Generiamo gli ID unici per le 196 patch SPAZIALI di questa SITS
+        # Questi ID saranno [base, base+1, ..., base+195]
+        spatial_patch_ids_for_this_sits = np.arange(
+            current_global_sits_patch_base_id, 
+            current_global_sits_patch_base_id + Num_Patches
+        )
+        
+        # 2. Aggiorniamo il contatore globale per il *prossimo* sits_id
+        current_global_sits_patch_base_id += Num_Patches
+        # --- FINE MODIFICA CHIAVE ---
+
+        # 3. Ora iteriamo sui timestamp e USIAMO gli ID spaziali appena generati
         for t in range(T):
             timestamp = int(meta["positions"][t])
             labels_for_timestep = meta["label"][t] 
@@ -163,25 +175,30 @@ def save_temporal_embeddings(batch_meta, embeddings, csv_path, mode='a', start_g
             for patch16_idx in range(Num_Patches):
                 patch_label = int(labels_for_timestep[patch16_idx])
                 
+                # --- MODIFICA CHIAVE ---
+                # Prendiamo l'ID spaziale corrispondente, che è lo stesso per ogni 't'
+                patch_id_spaziale = int(spatial_patch_ids_for_this_sits[patch16_idx])
+                # --- FINE MODIFICA CHIAVE ---
+
                 row = {
-                    "sits_id": meta["sits_id"],  # ID dell'immagine/scena/location
-                    "patch_id": global_patch_id, # <-- MODIFICA: ID univoco globale
+                    "sits_id": meta["sits_id"],
+                    "patch_id": patch_id_spaziale, # <-- ID spaziale, non più globale-temporale
                     "timestamp": timestamp,
-                    "label": patch_label,        # Label specifica della patch 16x16
-                    # "patch16_index" rimosso
+                    "label": patch_label,
                 }
                 
-                # Aggiungi le C features per questa patch 16x16
+                # Aggiungi le C features
                 emb_vector = patch_embeddings_for_timestep[patch16_idx]
                 row.update({f"emb_{k}": float(emb_vector[k]) for k in range(C)})
                 rows.append(row)
                 
-                global_patch_id += 1 # <-- MODIFICA: Incrementa per ogni patch 16x16 salvata
+                # NON incrementiamo più il contatore qui dentro!
 
     df = pd.DataFrame(rows)
     df.to_csv(csv_path, index=False, mode=mode, header=(mode == 'w'))
     
-    return global_patch_id # <-- MODIFICA: Restituisce il nuovo contatore globale
+    # Restituisce il nuovo contatore di base, pronto per il prossimo batch
+    return current_global_sits_patch_base_id
 
 
 # ----------------------------------------------------------------------------
@@ -249,10 +266,10 @@ if __name__ == "__main__":
     
     # Argomenti resi più robusti
     parser = argparse.ArgumentParser(description="Estrai embeddings per patch DINOv3")
-    parser.add_argument("--csv_path", type=str, default="embeddings_dino_patches.csv", help="Path CSV output")
+    parser.add_argument("--csv_path", type=str, default="embeddings_dino_sat493m.csv", help="Path CSV output")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size per il DataLoader")
-    parser.add_argument("--data_path", type=str, default="/Users/chiaranguyen/Desktop/SitsSCD/datasets/DynamicEarthNet_DINO_Test", help="Path alla cartella DynamicEarthNet")
-    parser.add_argument("--model_name", type=str, default="vit_small_patch16_dinov3", help="Nome modello 'timm' (es. vit_small_patch16_dinov3)")
+    parser.add_argument("--data_path", type=str, default="/Users/chiaranguyen/Desktop/SitsSCD/datasets/DynamicEarthNet_DINO", help="Path alla cartella DynamicEarthNet")
+    parser.add_argument("--model_name", type=str, default="vit_large_patch16_dinov3.sat493m", help="Nome modello 'timm' (es. vit_small_patch16_dinov3)")
     
     args = parser.parse_args()
 
