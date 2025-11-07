@@ -18,9 +18,6 @@ RANDOM_STATE = 42
 PROJECTIONS = {
     "srp": SparseRandomProjection,      # Sparse Random Projection
     "grp": GaussianRandomProjection,    # Gaussian Random Projection
-    "ipca": IncrementalPCA,             # Incremental PCA
-    "umap": umap.UMAP,                  # UMAP (non lineare)
-    #"kmeans": MiniBatchKMeans           # KMeans (embedding basato su centroidi)
 }
 
 SIZES = [256, 128, 64]

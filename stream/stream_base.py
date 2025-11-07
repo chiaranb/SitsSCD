@@ -2,7 +2,7 @@ import wandb
 from capymoa.classifier import (
     HoeffdingTree, NaiveBayes, SGDClassifier, KNN, EFDT, WeightedkNN,
     HoeffdingAdaptiveTree, LeveragingBagging, OnlineAdwinBagging, StreamingGradientBoostedTrees, AdaptiveRandomForestClassifier,
-    DynamicWeightedMajority, OnlineBagging, OzaBoost, OnlineSmoothBoost, StreamingGradientBoostedTrees, StreamingRandomPatches, SAMkNN, CSMOTE
+    OnlineBagging, CSMOTE
 )
 from capymoa.evaluation import ClassificationEvaluator
 from tqdm import tqdm
@@ -17,6 +17,8 @@ from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 wandb.login()
 PROJECT_NAME = "capymoa-streaming"
 
+ADAPT_ON_STREAM = True  # True for prequential, False for test-only
+
 PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
@@ -26,8 +28,11 @@ RANDOM_SEED = 42
 
 # ---------------- Define models ----------------
 MODELS = {
-    "SGD": SGDClassifier,
-    }
+    "CSMOTE_HoeffdingAdaptiveTree": lambda schema: CSMOTE(
+        schema=schema,
+        base_learner="trees.HoeffdingAdaptiveTree"
+    )
+}
 
 # ---------------- Helper: prequential loop ----------------
 def run_prequential_experiment(csv_path: str):
@@ -52,23 +57,23 @@ def run_prequential_experiment(csv_path: str):
 
     run_name_base = os.path.basename(csv_path).replace(".csv", "")
     
-    # This list will hold results from all models for this file
     results = []
 
     # Loop through each model
     for model_name, model_class in tqdm(MODELS.items(), desc=f"Models ({run_name_base})", leave=False):
         
-        # --- MODIFICATION: wandb.init() is now INSIDE the loop ---
-        # This creates a NEW run for each model.
+        run_suffix = "adapt" if ADAPT_ON_STREAM else "test_only"
+        run_name = f"{run_name_base}_{model_name}_{run_suffix}"
+
         run = wandb.init(
             project=PROJECT_NAME,
-            # Give each run a unique name, e.g., "embedding_file_KNN"
-            name=f"{run_name_base}_{model_name}", 
+            name=run_name, 
             config={
                 "embedding_file": csv_path, 
-                "model": model_name
+                "model": model_name,
+                "adaptation": ADAPT_ON_STREAM 
             },
-            reinit=True # Important: Allows wandb.init() to be called in a loop
+            reinit=True
         )
 
         try:
@@ -98,20 +103,19 @@ def run_prequential_experiment(csv_path: str):
                     y_pred = int(model.predict(instance))
                     std_eval.update(y_true, y_pred)
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
-                    model.train(instance)
+                    
+                    if ADAPT_ON_STREAM:
+                        model.train(instance)
 
                 # --- Log metrics ---
-                # This is now safe because each model has its own run,
-                # so the step `ts` is always increasing *for that run*.
                 metrics = change_eval.compute()
-                log_data = {f"{k}": v for k, v in metrics.items()} # No model prefix needed
+                log_data = {f"{k}": v for k, v in metrics.items()}
                 log_data[f"std_accuracy"] = std_eval.accuracy()
                 log_data[f"std_precision"] = std_eval.precision()
                 log_data[f"std_recall"] = std_eval.recall()
                 log_data[f"std_f1"] = std_eval.f1_score()
                 log_data[f"std_kappa"] = std_eval.kappa()
                 
-                # Log to the model's dedicated run
                 wandb.log(log_data, step=ts) 
 
                 pbar.set_postfix({
@@ -122,7 +126,7 @@ def run_prequential_experiment(csv_path: str):
 
             # 3️⃣ Final metrics
             final_metrics = {
-                "embedding": run_name_base, # Use the base name
+                "embedding": run_name_base,
                 "model": model_name,
                 "accuracy": std_eval.accuracy(),
                 "precision": std_eval.precision(),
@@ -138,15 +142,12 @@ def run_prequential_experiment(csv_path: str):
             print("Skipping to next model...")
         
         finally:
-            # --- MODIFICATION: run.finish() is now INSIDE the loop ---
-            # This closes the run for the current model before starting the next one.
             run.finish()
 
     # Return all results for this file
     return results
 
 # ---------------- Master loop over all embeddings ----------------
-# (This section is unchanged and correct)
 all_results_in_memory = []
 all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv")]
 
@@ -170,7 +171,6 @@ for file in tqdm(all_files, desc="Processing Embedding Files"):
         all_results_in_memory.extend(res)
 
 # ---------------- Save combined results ----------------
-# (This section is unchanged and correct)
 print(f"\nAll results saved incrementally to {OUTPUT_CSV_FILE}")
 print("Logging summary table to WandB...")
 

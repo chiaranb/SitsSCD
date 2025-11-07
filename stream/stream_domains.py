@@ -11,7 +11,10 @@ import numpy as np
 from capymoa.instance import LabeledInstance
 from capymoa.stream import Schema 
 import os
-import json # Importato
+import json 
+from river import linear_model, optim, preprocessing, feature_extraction, compose, multiclass
+from river_wrapper import RiverClassifier
+
 from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 
 # ---------------- Configuration ----------------
@@ -29,10 +32,14 @@ RANDOM_SEED = 42
 
 # ---------------- Define models ----------------
 MODELS = {
-    "SGD": SGDClassifier,
-    "HoeffdingTree": HoeffdingTree,
-    "AdaptiveRandomForest": AdaptiveRandomForestClassifier,
+    "Softmax_OneVsRest": lambda schema: RiverClassifier(
+        schema=schema,
+        river_model_instance=compose.Pipeline(
+            multiclass.OneVsRestClassifier(linear_model.SoftmaxRegression())
+        )
+    ),
 }
+        
 
 # ---------------- Helper: prequential loop per scenario ----------------
 def run_scenario_experiment(
@@ -206,33 +213,33 @@ except FileNotFoundError:
     exit()
 
 # Loop sui file CSV
-for file in tqdm(all_files, desc="Processing Embedding Files"):
-    file_path = os.path.join(PROCESSED_DIR, file)
+#for file in tqdm(all_files, desc="Processing Embedding Files"):
+    #file_path = os.path.join(PROCESSED_DIR, file)
+file_path ="/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO/embeddings_dino_sat493m.csv"
+print(f"\n=== Loading {file_path} ===")
+df_full = pd.read_csv(file_path)
+
+# Loop sugli Scenari
+for scenario in tqdm(SCENARIOS_TO_RUN, desc=f"Scenarios ({os.path.basename(file_path)})", leave=False):
     
-    print(f"\n=== Loading {file_path} ===")
-    df_full = pd.read_csv(file_path)
+    # Esegui l'esperimento per questo file E questo scenario
+    res = run_scenario_experiment(
+        df_full, 
+        sits_splits, 
+        scenario, 
+        file_path
+    )
     
-    # Loop sugli Scenari
-    for scenario in tqdm(SCENARIOS_TO_RUN, desc=f"Scenarios ({os.path.basename(file)})", leave=False):
-        
-        # Esegui l'esperimento per questo file E questo scenario
-        res = run_scenario_experiment(
-            df_full, 
-            sits_splits, 
-            scenario, 
-            file_path
+    if res:
+        df_batch = pd.DataFrame(res)
+        write_header = not os.path.exists(OUTPUT_CSV_FILE)
+        df_batch.to_csv(
+            OUTPUT_CSV_FILE, 
+            mode='a',
+            header=write_header, 
+            index=False
         )
-        
-        if res:
-            df_batch = pd.DataFrame(res)
-            write_header = not os.path.exists(OUTPUT_CSV_FILE)
-            df_batch.to_csv(
-                OUTPUT_CSV_FILE, 
-                mode='a',
-                header=write_header, 
-                index=False
-            )
-            all_results_in_memory.extend(res)
+        all_results_in_memory.extend(res)
 
 # ---------------- Save combined results ----------------
 print(f"\nAll results saved incrementally to {OUTPUT_CSV_FILE}")

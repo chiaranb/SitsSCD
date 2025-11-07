@@ -148,7 +148,7 @@ def extract_embeddings_from_dataloader(dataloader, utae_model, csv_path, pool='a
 
             # Prepara metadati per ogni sample
             batch_meta = [
-                {"sits_id": int(sits_id[i]), "positions": positions[i], "label": labels[i]} 
+                {"sits_id": sits_id, "positions": positions[i], "label": labels[i]} 
                 for i in range(len(sits_id))
             ]
 

@@ -5,58 +5,44 @@ import pandas as pd
 import numpy as np
 from capymoa.instance import LabeledInstance
 from capymoa.stream import Schema 
+from capymoa.base import SKClassifier
 import os
 from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 
-from river import linear_model, optim, preprocessing, feature_extraction, compose, multiclass
-
-from river_wrapper import RiverClassifier
-
+from sklearn import linear_model
 
 # ---------------- Configuration ----------------
-#wandb.login()
+wandb.login() 
 PROJECT_NAME = "capymoa-streaming"
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
+ADAPT_ON_STREAM = False # True for prequential, False for test-only
+
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
 MONTHS_PER_YEAR = 12
-
-# ---------------- Define Pipeline Combinations ----------------
-# This is where you define all the pipelines you want to test.
-# The key is the name that will appear in WandB.
-# The value is a function that *returns* an instantiated River pipeline.
-
-# Set parameters for projections
-N_COMPONENTS = 256
 RANDOM_SEED = 42
 
+# ---------------- Define Pipeline Combinations ----------------
 PIPELINE_DEFINITIONS = {
-    "Perceptron_OneVsRest": lambda: compose.Pipeline(
-        multiclass.OneVsRestClassifier(linear_model.Perceptron())
+    "SGDClassifier": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=linear_model.SGDClassifier(random_state=RANDOM_SEED, loss='log_loss')
     ),
-    "Logistic_OneVsRest": lambda: compose.Pipeline(
-        multiclass.OneVsRestClassifier(linear_model.LogisticRegression())
+    "Perceptron": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=linear_model.Perceptron(random_state=RANDOM_SEED)
     ),
-    "StdScale_Logistic_OneVsRest": lambda: compose.Pipeline(
-        preprocessing.StandardScaler(),
-        multiclass.OneVsRestClassifier(linear_model.LogisticRegression())
+    "PassiveAggressive": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=linear_model.PassiveAggressiveClassifier(random_state=RANDOM_SEED)
     ),
-    "RobustScale_Logistic_OneVsRest": lambda: compose.Pipeline(
-        preprocessing.RobustScaler(),
-        multiclass.OneVsRestClassifier(linear_model.LogisticRegression())
-    ),
-    "StdScale_Perceptron_OneVsRest": lambda: compose.Pipeline(
-        preprocessing.StandardScaler(),
-        multiclass.OneVsRestClassifier(linear_model.Perceptron())
-    ),
-    "RobustScale_Perceptron_OneVsRest": lambda: compose.Pipeline(
-        preprocessing.RobustScaler(),
-        multiclass.OneVsRestClassifier(linear_model.Perceptron())
-    ),
+    "SGD_SVM": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=linear_model.SGDClassifier(random_state=RANDOM_SEED, loss='hinge')
+    )   
 }
-
 
 # ---------------- Helper: prequential loop ----------------
 def run_prequential_experiment(csv_path: str):
@@ -82,46 +68,42 @@ def run_prequential_experiment(csv_path: str):
     
     results = []
 
-    # --- 3. Create the final models to run from the definitions ---
-    # This dictionary will hold the final, callable lambdas for the wrapper
-    MODELS_TO_RUN = {}
-    for pipe_name, pipe_fn in PIPELINE_DEFINITIONS.items():
-        # This lambda captures the schema (s) and pipeline function (p)
-        # It creates a RiverClassifier with an *instantiated* pipeline
-        MODELS_TO_RUN[pipe_name] = (lambda s=schema, p=pipe_fn: 
-            RiverClassifier(
-                schema=s,
-                river_model_instance=p() # p() calls the lambda, e.g., compose.Pipeline(...)
-            )
-        )
-
-    # --- 4. Loop through the dynamically created pipelines ---
-    for model_name, model_lambda in tqdm(MODELS_TO_RUN.items(), desc=f"Pipelines ({run_name_base})", leave=False):
+    
+    # --- 4. Loop through the pipeline definitions ---
+    for model_name, model_fn in tqdm(PIPELINE_DEFINITIONS.items(), desc=f"Pipelines ({run_name_base})", leave=False):
+        
+        run_suffix = "" if ADAPT_ON_STREAM else "test_only"
+        run_name = f"{run_name_base}_{model_name}_{run_suffix}"
         
         run = wandb.init(
             project=PROJECT_NAME,
-            # Name will be e.g., "my_embedding_StdScale_GRP_LR"
-            name=f"{run_name_base}_{model_name}", 
+            name=run_name, 
             config={
                 "embedding_file": csv_path, 
-                "pipeline": model_name
+                "pipeline": model_name,
+                "adaptation": ADAPT_ON_STREAM 
             },
             reinit=True 
         )
 
         try:
-            # Call the lambda to get the fully wrapped model
-            model = model_lambda() 
+            model = model_fn(schema) 
             
-            std_eval = ClassificationEvaluator(schema=schema, window_size=1000)
+            std_eval = ClassificationEvaluator(schema=schema)
             change_eval = StreamingChangeEvaluator(num_classes=NUM_CLASSES)
 
             # 1️⃣ Train iniziale (2018)
+            print(f"\nInitial training for {model_name}...")
+            
             for _, row in tqdm(df_train.iterrows(), total=len(df_train), desc=f"Initial Train ({model_name})", leave=False):
                 y_true = int(row[LABEL_NAME])
                 X = np.array([row[c] for c in feature_cols], dtype=float)
                 instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
+                
                 model.train(instance)
+            
+            print("Initial training completed.")
+
 
             # 2️⃣ Prequential test (2019 mese per mese)
             pbar = tqdm(stream_ts, desc=f"Prequential ({model_name})", leave=False)
@@ -138,7 +120,9 @@ def run_prequential_experiment(csv_path: str):
                     y_pred = int(model.predict(instance))
                     std_eval.update(y_true, y_pred)
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
-                    model.train(instance)
+                    
+                    if ADAPT_ON_STREAM:
+                        model.train(instance)
 
                 # --- Log metrics ---
                 metrics = change_eval.compute()
@@ -160,7 +144,7 @@ def run_prequential_experiment(csv_path: str):
             # 3️⃣ Final metrics
             final_metrics = {
                 "embedding": run_name_base,
-                "model": model_name, # This will now be the pipeline name
+                "model": model_name,
                 "accuracy": std_eval.accuracy(),
                 "precision": std_eval.precision(),
                 "recall": std_eval.recall(),
@@ -180,29 +164,28 @@ def run_prequential_experiment(csv_path: str):
     return results
 
 # ---------------- Master loop over all embeddings ----------------
-# (This section is unchanged and correct)
 all_results_in_memory = []
 all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv")]
 
 OUTPUT_CSV_FILE = "search_results_all_embeddings.csv"
 print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
-#for file in tqdm(all_files, desc="Processing Embedding Files"):
-#file_path = os.path.join(PROCESSED_DIR, file)
-file_path = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO/embeddings_dino_small.csv"
+for file in tqdm(all_files, desc="Processing Embedding Files"):
+    file_path = os.path.join(PROCESSED_DIR, file)
+    #file_path = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO/embeddings_dino_small.csv"
 
-res = run_prequential_experiment(file_path)
+    res = run_prequential_experiment(file_path)
 
-if res:
-    df_batch = pd.DataFrame(res)
-    write_header = not os.path.exists(OUTPUT_CSV_FILE)
-    df_batch.to_csv(
-        OUTPUT_CSV_FILE, 
-        mode='a',
-        header=write_header, 
-        index=False
-    )
-    all_results_in_memory.extend(res)
+    if res:
+        df_batch = pd.DataFrame(res)
+        write_header = not os.path.exists(OUTPUT_CSV_FILE)
+        df_batch.to_csv(
+            OUTPUT_CSV_FILE, 
+            mode='a',
+            header=write_header, 
+            index=False
+        )
+        all_results_in_memory.extend(res)
 
 # ---------------- Save combined results ----------------
 print(f"\nAll results saved incrementally to {OUTPUT_CSV_FILE}")
