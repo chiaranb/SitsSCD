@@ -17,7 +17,9 @@ from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 wandb.login()
 PROJECT_NAME = "capymoa-streaming"
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
+ADAPT_ON_STREAM = True  # True for prequential, False for test-only
+
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
@@ -25,49 +27,46 @@ MONTHS_PER_YEAR = 12
 RANDOM_SEED = 42
 
 # ---------------- Define Experiment Configurations ----------------
-# 'name' will be used for logging.
-# 'model_class' is the classifier.
-# 'params' is a dictionary of hyperparameters to pass to the classifier.
 EXPERIMENT_CONFIGS = [
     {
-        "name": "OnlineBagging_size_10",
-        "model_class": OnlineBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "OnlineBagging_size_30",
-        "model_class": OnlineBagging,
-        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "OnlineAdwinBagging_size_10",
-        "model_class": OnlineAdwinBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "OnlineAdwinBagging_size_30",
-        "model_class": OnlineAdwinBagging,
-        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "LeveragingBagging_size_10",
-        "model_class": LeveragingBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "LeveragingBagging_size_30",
-        "model_class": LeveragingBagging,
-        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
+        "name": "AdaptiveRandomForestClassifier_size_5",
+        "model_class": AdaptiveRandomForestClassifier,
+        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
     },
     {
         "name": "AdaptiveRandomForestClassifier_size_10",
         "model_class": AdaptiveRandomForestClassifier,
         "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
     },
+        {
+        "name": "OnlineAdwinBagging_size_5",
+        "model_class": OnlineAdwinBagging,
+        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
+    },
     {
-        "name": "AdaptiveRandomForestClassifier_size_30",
-        "model_class": AdaptiveRandomForestClassifier,
-        "params": {"ensemble_size": 30, "random_seed": RANDOM_SEED}
+        "name": "OnlineAdwinBagging_size_10",
+        "model_class": OnlineAdwinBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+        {
+        "name": "LeveragingBagging_size_5",
+        "model_class": LeveragingBagging,
+        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "LeveragingBagging_size_10",
+        "model_class": LeveragingBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+    },
+        {
+        "name": "OnlineBagging_size_5",
+        "model_class": OnlineBagging,
+        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
+    },
+    {
+        "name": "OnlineBagging_size_10",
+        "model_class": OnlineBagging,
+        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
     }
 ]
 
@@ -78,7 +77,6 @@ def run_prequential_experiment(csv_path: str):
     df = df.sort_values("timestamp").reset_index(drop=True)
     unique_ts = sorted(df["timestamp"].unique())
 
-    # Split temporale
     train_ts = unique_ts[:MONTHS_PER_YEAR]
     stream_ts = unique_ts[MONTHS_PER_YEAR:]
 
@@ -98,20 +96,23 @@ def run_prequential_experiment(csv_path: str):
 
     for config in tqdm(EXPERIMENT_CONFIGS, desc=f"Models ({run_name_base})", leave=False):
         
-        # Unpack the config
         model_name = config["name"]
         model_class = config["model_class"]
         model_params = config["params"]
         
+        run_suffix = "adapt" if ADAPT_ON_STREAM else "test_only"
+        run_name = f"{run_name_base}_{model_name}_{run_suffix}"
+
         run = wandb.init(
             project=PROJECT_NAME,
-            name=f"{run_name_base}_{model_name}", 
+            name=run_name, 
             
             config={
                 "embedding_file": csv_path, 
                 "model_name": model_name,
                 "model_base": model_class.__name__,
-                **model_params  # This unpacks the 'params' dict into the config
+                "adaptation": ADAPT_ON_STREAM,
+                **model_params
             },
             reinit=True
         )
@@ -119,7 +120,7 @@ def run_prequential_experiment(csv_path: str):
         try:
             model = model_class(schema=schema, **model_params)
             
-            std_eval = ClassificationEvaluator(schema=schema, window_size=1000)
+            std_eval = ClassificationEvaluator(schema=schema)
             change_eval = StreamingChangeEvaluator(num_classes=NUM_CLASSES)
 
             # 1️⃣ Train iniziale (2018)
@@ -135,7 +136,8 @@ def run_prequential_experiment(csv_path: str):
                 df_month = df_stream[df_stream["timestamp"] == ts]
                 if df_month.empty:
                     continue
-
+                
+                print(f"Testing timestamp: {ts} with {len(df_month)} instances")
                 for _, row in df_month.iterrows():
                     y_true = int(row[LABEL_NAME])
                     X = np.array([row[c] for c in feature_cols], dtype=float)
@@ -144,7 +146,15 @@ def run_prequential_experiment(csv_path: str):
                     y_pred = int(model.predict(instance))
                     std_eval.update(y_true, y_pred)
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
-                    model.train(instance)
+                    
+                
+                if ADAPT_ON_STREAM:
+                    print(f"Training on month {ts}...")
+                    for _, row in df_month.iterrows():
+                        y_true = int(row[LABEL_NAME])
+                        X = np.array([row[c] for c in feature_cols], dtype=float)
+                        instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
+                        model.train(instance)
 
                 # --- Log metrics ---
                 metrics = change_eval.compute()
@@ -193,9 +203,9 @@ print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
 for file in tqdm(all_files, desc="Processing Embedding Files"):
     file_path = os.path.join(PROCESSED_DIR, file)
-    
+
     res = run_prequential_experiment(file_path)
-    
+
     if res:
         df_batch = pd.DataFrame(res)
         write_header = not os.path.exists(OUTPUT_CSV_FILE)

@@ -1,8 +1,8 @@
 import wandb
 from capymoa.classifier import (
-    HoeffdingTree, NaiveBayes, SGDClassifier, KNN, EFDT, WeightedkNN,
+    HoeffdingTree, NaiveBayes, SGDClassifier, KNN, EFDT, WeightedkNN, SAMkNN,
     HoeffdingAdaptiveTree, LeveragingBagging, OnlineAdwinBagging, StreamingGradientBoostedTrees, AdaptiveRandomForestClassifier,
-    OnlineBagging, CSMOTE
+    OnlineBagging, CSMOTE, StreamingRandomPatches
 )
 from capymoa.evaluation import ClassificationEvaluator
 from tqdm import tqdm
@@ -19,7 +19,7 @@ PROJECT_NAME = "capymoa-streaming"
 
 ADAPT_ON_STREAM = True  # True for prequential, False for test-only
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/emb_DINO"
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings/emb_SAT"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
@@ -28,10 +28,7 @@ RANDOM_SEED = 42
 
 # ---------------- Define models ----------------
 MODELS = {
-    "CSMOTE_HoeffdingAdaptiveTree": lambda schema: CSMOTE(
-        schema=schema,
-        base_learner="trees.HoeffdingAdaptiveTree"
-    )
+    "KNN": lambda schema: KNN(schema=schema, random_seed=RANDOM_SEED)
 }
 
 # ---------------- Helper: prequential loop ----------------
@@ -94,7 +91,8 @@ def run_prequential_experiment(csv_path: str):
                 df_month = df_stream[df_stream["timestamp"] == ts]
                 if df_month.empty:
                     continue
-
+                
+                print(f"Testing timestamp: {ts} with {len(df_month)} instances")
                 for _, row in df_month.iterrows():
                     y_true = int(row[LABEL_NAME])
                     X = np.array([row[c] for c in feature_cols], dtype=float)
@@ -103,8 +101,13 @@ def run_prequential_experiment(csv_path: str):
                     y_pred = int(model.predict(instance))
                     std_eval.update(y_true, y_pred)
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
-                    
-                    if ADAPT_ON_STREAM:
+                
+                if ADAPT_ON_STREAM:
+                    print(f"Training on month {ts}...")
+                    for _, row in df_month.iterrows():
+                        y_true = int(row[LABEL_NAME])
+                        X = np.array([row[c] for c in feature_cols], dtype=float)
+                        instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
                         model.train(instance)
 
                 # --- Log metrics ---
@@ -156,9 +159,10 @@ print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
 for file in tqdm(all_files, desc="Processing Embedding Files"):
     file_path = os.path.join(PROCESSED_DIR, file)
-    
+#file_path = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings/emb_DINO/embeddings_dino_large.csv"
+
     res = run_prequential_experiment(file_path)
-    
+
     if res:
         df_batch = pd.DataFrame(res)
         write_header = not os.path.exists(OUTPUT_CSV_FILE)
