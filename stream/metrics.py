@@ -42,58 +42,62 @@ class StreamingChangeEvaluator:
         self._last_state[patch_id] = (y_true, y_pred)
 
     def compute(self):
-            """
-            Computes and returns all aggregated metrics.
-            """
-            
-            conf_mat = self.conf_matrix
-            conf_mat_change = self.conf_matrix_change
-            conf_mat_sc = self.conf_matrix_sc
+        conf_mat = self.conf_matrix
+        conf_mat_change = self.conf_matrix_change
+        conf_mat_sc = self.conf_matrix_sc
 
-            # --- Classification Metrics ---
-            tp = np.diag(conf_mat)
-            support = conf_mat.sum(axis=1)
-            pred_counts = conf_mat.sum(axis=0)
-            fp = pred_counts - tp
-            fn = support - tp
-            
-            iou_denom = tp + fp + fn
-            # This is the per-class IoU array (values 0.0 to 1.0)
-            per_class_iou = tp / (iou_denom + 1e-8) 
-            
-            # Mean IoU (mIoU)
-            miou = np.nanmean(per_class_iou[support > 0]) * 100
-            if np.isnan(miou): miou = 0.0
-            
-            # --- Change Metrics ---
-            
-            # Binary Change (BC)
-            bc_denom = conf_mat_change.sum() - conf_mat_change[0, 0]
-            bc = (conf_mat_change[1, 1] / (bc_denom + 1e-8)) * 100
+        # --- Classification Metrics ---
+        tp = np.diag(conf_mat)
+        support = conf_mat.sum(axis=1)
+        pred_counts = conf_mat.sum(axis=0)
 
-            # Semantic Change (SC)
-            tp_sc = np.diag(conf_mat_sc)
-            support_sc = conf_mat_sc.sum(axis=1)
-            fp_sc = conf_mat_sc.sum(axis=0) - tp_sc
-            fn_sc = support_sc - tp_sc
-            iou_sc_denom = tp_sc + fp_sc + fn_sc
-            iou_sc = tp_sc / (iou_sc_denom + 1e-8)
-            sc = np.nanmean(iou_sc[support_sc > 0]) * 100
-            if np.isnan(sc): sc = 0.0
+        fp = pred_counts - tp
+        fn = support - tp
+        
+        # IoU per classe
+        iou_denom = tp + fp + fn
+        per_class_iou = tp / (iou_denom + 1e-8)
 
-            # SCS
-            scs = 0.5 * (bc + sc)
+        miou = np.nanmean(per_class_iou[support > 0]) * 100
+        if np.isnan(miou): 
+            miou = 0.0
 
-            output = {
-                "miou": miou,
-                "bc": bc,
-                "sc": sc,
-                "scs": scs,
-            }
+        # Precision, Recall, F1
+        precision = tp / (tp + fp + 1e-8)
+        recall = tp / (tp + fn + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
 
-            # per-class IoU metrics
-            per_class_iou_percent = per_class_iou * 100
-            for i, class_name in enumerate(CLASS_NAMES):
-                output[f"{class_name}"] = per_class_iou_percent[i]
+        # --- Change Metrics ---
+        bc_denom = conf_mat_change.sum() - conf_mat_change[0, 0]
+        bc = (conf_mat_change[1, 1] / (bc_denom + 1e-8)) * 100
 
-            return output
+        tp_sc = np.diag(conf_mat_sc)
+        support_sc = conf_mat_sc.sum(axis=1)
+        fp_sc = conf_mat_sc.sum(axis=0) - tp_sc
+        fn_sc = support_sc - tp_sc
+
+        iou_sc_denom = tp_sc + fp_sc + fn_sc
+        iou_sc = tp_sc / (iou_sc_denom + 1e-8)
+        
+        sc = np.nanmean(iou_sc[support_sc > 0]) * 100
+        if np.isnan(sc): 
+            sc = 0.0
+
+        scs = 0.5 * (bc + sc)
+
+        output = {
+            "miou": miou,
+            "bc": bc,
+            "sc": sc,
+            "scs": scs,
+        }
+
+        # Per-class metrics
+        for i, class_name in enumerate(CLASS_NAMES):
+            output[f"{class_name}"] = float(per_class_iou[i] * 100)
+            output[f"{class_name}_precision"] = float(precision[i] * 100)
+            output[f"{class_name}_recall"] = float(recall[i] * 100)
+            output[f"{class_name}_f1"] = float(f1[i] * 100)
+            output[f"{class_name}_support"] = int(support[i])
+
+        return output

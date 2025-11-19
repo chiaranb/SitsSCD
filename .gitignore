@@ -3,5 +3,6 @@
 /checkpoints
 /wandb
 *.pyc
-/stream/wandb
 /processed_embeddings
+/stream/embeddings
+/csv files
