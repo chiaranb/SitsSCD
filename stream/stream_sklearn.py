@@ -7,7 +7,7 @@ from capymoa.instance import LabeledInstance
 from capymoa.stream import Schema 
 from capymoa.base import SKClassifier
 from capymoa.type_alias import LabelIndex
-from sklearn import linear_model
+from sklearn import linear_model, multiclass
 from capymoa.stream.preprocessing import ClassifierPipeline, MOATransformer
 from capymoa.drift.detectors import ADWIN
 from moa.streams.filters import NormalisationFilter
@@ -21,7 +21,7 @@ PROJECT_NAME = "capymoa-streaming"
 
 ADAPT_ON_STREAM = True  # True for prequential, False for test-only
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings/MultiUTAE"
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
@@ -30,25 +30,12 @@ RANDOM_SEED = 42
 
 # ---------------- Define Pipeline Combinations ----------------
 
-drift_detector = ADWIN()
-
 PIPELINE_DEFINITIONS = {
-    "SGDClassifier_ADWIN": lambda schema: (
-        ClassifierPipeline()
-        .add_classifier(
-            SKClassifier(
-                schema=schema,
-                sklearner=linear_model.SGDClassifier(
-                    random_state=RANDOM_SEED,
-                    loss="log_loss"
-                )
-            )
-        )
-        .add_drift_detector(
-            drift_detector,
-            label_equals_prediction,
-        )
-    )
+    "SGDClassifier_OneVsRest": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=multiclass.OneVsRestClassifier(
+            linear_model.SGDClassifier(random_state=RANDOM_SEED, loss="log_loss")
+        )),
 }
 
 
@@ -115,7 +102,6 @@ def run_prequential_experiment(csv_path: str):
             print("Initial training completed.")
 
             pbar = tqdm(stream_ts, desc=f"Prequential ({model_name})", leave=False)
-            n_drifts_detected = 0
 
             for ts in pbar:
                 df_month = df_stream[df_stream["timestamp"] == ts]
@@ -140,10 +126,6 @@ def run_prequential_experiment(csv_path: str):
                         instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
                         model.train(instance)
                     
-                    drift_flag = int(drift_detector.detected_change())
-                    if drift_flag:
-                        n_drifts_detected += 1
-                        print(f"Concept drift detected at timestamp {ts} (total={n_drifts_detected})")
 
                     wandb.log({
                         "std_accuracy": std_eval.accuracy(),
@@ -151,7 +133,8 @@ def run_prequential_experiment(csv_path: str):
                         "std_recall": std_eval.recall(),
                         "std_f1": std_eval.f1_score(),
                         "std_kappa": std_eval.kappa(),
-                        "n_drifts_detected": n_drifts_detected
+                        "std_kappa_m": std_eval.kappa_m(),
+                        "std_kappa_t": std_eval.kappa_t(),
                     }, step=ts)
 
                 metrics = change_eval.compute()
@@ -161,7 +144,9 @@ def run_prequential_experiment(csv_path: str):
                             "std_recall": std_eval.recall(),
                             "std_f1": std_eval.f1_score(),
                             "std_kappa": std_eval.kappa(),
-                            "n_drifts_detected": n_drifts_detected}
+                            "std_kappa_m": std_eval.kappa_m(),
+                            "std_kappa_t": std_eval.kappa_t()
+                            }
 
                 wandb.log(log_data, step=ts)
 
@@ -178,6 +163,8 @@ def run_prequential_experiment(csv_path: str):
                 "recall": std_eval.recall(),
                 "f1": std_eval.f1_score(),
                 "kappa": std_eval.kappa(),
+                "kappa_m": std_eval.kappa_m(),
+                "kappa_t": std_eval.kappa_t(),
                 **change_eval.compute(),
             }
             results.append(final_metrics)
@@ -188,7 +175,6 @@ def run_prequential_experiment(csv_path: str):
 
         finally:
             run.finish()
-
     return results
 
 
@@ -196,7 +182,7 @@ def run_prequential_experiment(csv_path: str):
 all_results_in_memory = []
 all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv")]
 
-OUTPUT_CSV_FILE = "search_results_all_embeddings.csv"
+OUTPUT_CSV_FILE = "search_results_all_embeddings_new.csv"
 print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
 for file in tqdm(all_files, desc="Processing Embedding Files"):

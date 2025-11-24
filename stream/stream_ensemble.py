@@ -8,10 +8,12 @@ from capymoa.evaluation import ClassificationEvaluator
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from capymoa.instance import LabeledInstance
 from capymoa.stream import Schema 
 import os
 from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
+from utils import plot_confusion_matrix_image
 
 # ---------------- Configuration ----------------
 wandb.login()
@@ -19,7 +21,7 @@ PROJECT_NAME = "capymoa-streaming"
 
 ADAPT_ON_STREAM = True  # True for prequential, False for test-only
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings"
+PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings/MultiUTAE"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
@@ -28,46 +30,16 @@ RANDOM_SEED = 42
 
 # ---------------- Define Experiment Configurations ----------------
 EXPERIMENT_CONFIGS = [
-    {
-        "name": "AdaptiveRandomForestClassifier_size_5",
-        "model_class": AdaptiveRandomForestClassifier,
-        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "AdaptiveRandomForestClassifier_size_10",
-        "model_class": AdaptiveRandomForestClassifier,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
+        {
+        "name": "StreamingRandomPatches_size_10",
+        "model_class": StreamingRandomPatches,
+        "params": {"random_seed": RANDOM_SEED}
     },
         {
-        "name": "OnlineAdwinBagging_size_5",
-        "model_class": OnlineAdwinBagging,
-        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
+        "name": "StreamingGradientBoostedTrees",
+        "model_class": StreamingGradientBoostedTrees,
+        "params": {"random_seed": RANDOM_SEED}
     },
-    {
-        "name": "OnlineAdwinBagging_size_10",
-        "model_class": OnlineAdwinBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    },
-        {
-        "name": "LeveragingBagging_size_5",
-        "model_class": LeveragingBagging,
-        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "LeveragingBagging_size_10",
-        "model_class": LeveragingBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    },
-        {
-        "name": "OnlineBagging_size_5",
-        "model_class": OnlineBagging,
-        "params": {"ensemble_size": 5, "random_seed": RANDOM_SEED}
-    },
-    {
-        "name": "OnlineBagging_size_10",
-        "model_class": OnlineBagging,
-        "params": {"ensemble_size": 10, "random_seed": RANDOM_SEED}
-    }
 ]
 
 # ---------------- Helper: prequential loop ----------------
@@ -119,16 +91,17 @@ def run_prequential_experiment(csv_path: str):
 
         try:
             model = model_class(schema=schema, **model_params)
-            
             std_eval = ClassificationEvaluator(schema=schema)
             change_eval = StreamingChangeEvaluator(num_classes=NUM_CLASSES)
 
             # 1️⃣ Train iniziale (2018)
+            print(f"Initial training on {len(df_train)} instances...")
             for _, row in tqdm(df_train.iterrows(), total=len(df_train), desc=f"Initial Train ({model_name})", leave=False):
                 y_true = int(row[LABEL_NAME])
                 X = np.array([row[c] for c in feature_cols], dtype=float)
                 instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
                 model.train(instance)
+            print("Initial training completed.")
 
             # 2️⃣ Prequential test (2019 mese per mese)
             pbar = tqdm(stream_ts, desc=f"Prequential ({model_name})", leave=False)
@@ -138,6 +111,14 @@ def run_prequential_experiment(csv_path: str):
                     continue
                 
                 print(f"Testing timestamp: {ts} with {len(df_month)} instances")
+                # Lists for per-timestamp confusion matrices
+                y_true_list = []
+                y_pred_list = []
+                change_true_list = []
+                change_pred_list = []
+                sc_true_list = []
+                sc_pred_list = []
+                
                 for _, row in df_month.iterrows():
                     y_true = int(row[LABEL_NAME])
                     X = np.array([row[c] for c in feature_cols], dtype=float)
@@ -145,6 +126,28 @@ def run_prequential_experiment(csv_path: str):
 
                     y_pred = int(model.predict(instance))
                     std_eval.update(y_true, y_pred)
+                    
+                    # Append values for the standard classification CM
+                    y_true_list.append(y_true)
+                    y_pred_list.append(y_pred)
+
+                    # 1. Get the previous state (t-1)
+                    last_state = getattr(change_eval, "_last_state", {})
+                    if row[PATCH_ID_COLUMN_NAME] in last_state:
+                        y_prev, y_pred_prev = last_state[row[PATCH_ID_COLUMN_NAME]]
+                        
+                        # 2. Compare current (t) vs previous (t-1)
+                        gt_change = 1 if y_true != y_prev else 0
+                        pred_change = 1 if y_pred != y_pred_prev else 0
+                        
+                        # 3. Append to lists for plotting
+                        change_true_list.append(gt_change)
+                        change_pred_list.append(pred_change)
+
+                        if gt_change == 1:
+                            sc_true_list.append(y_true)
+                            sc_pred_list.append(y_pred)
+                            
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
                     
                 
@@ -158,13 +161,34 @@ def run_prequential_experiment(csv_path: str):
 
                 # --- Log metrics ---
                 metrics = change_eval.compute()
-                log_data = {f"{k}": v for k, v in metrics.items()} 
-                log_data[f"std_accuracy"] = std_eval.accuracy()
-                log_data[f"std_precision"] = std_eval.precision()
-                log_data[f"std_recall"] = std_eval.recall()
-                log_data[f"std_f1"] = std_eval.f1_score()
-                log_data[f"std_kappa"] = std_eval.kappa()
+                log_data = {**metrics,
+                            "std_accuracy": std_eval.accuracy(),
+                            "std_precision": std_eval.precision(),
+                            "std_recall": std_eval.recall(),
+                            "std_f1": std_eval.f1_score(),
+                            "std_kappa": std_eval.kappa(),
+                            "std_kappa_m": std_eval.kappa_m(),
+                            "std_kappa_t": std_eval.kappa_t(),
+                           }
                 
+                # 1. Classification CM (per-timestamp)
+                if y_true_list:
+                    fig_cm = plot_confusion_matrix_image(y_true_list, y_pred_list, CLASS_NAMES, title=f"Confusion Matrix (ts={ts})")
+                    log_data["Classification CM (per-timestamp)"] = wandb.Image(fig_cm, caption=f"Classification CM ts={ts}")
+                    plt.close(fig_cm)
+
+                # 2. Binary Change CM (per-timestamp)
+                if change_true_list:
+                    fig_change = plot_confusion_matrix_image(change_true_list, change_pred_list, ["no_change", "change"], title=f"Change Confusion Matrix (ts={ts})")
+                    log_data["Change CM (per-timestamp)"] = wandb.Image(fig_change, caption=f"Change Confusion Matrix ts={ts}")
+                    plt.close(fig_change)
+
+                # 3. Semantic Change CM (per-timestamp)
+                if sc_true_list:
+                    fig_sc = plot_confusion_matrix_image(sc_true_list, sc_pred_list, CLASS_NAMES, title=f"Semantic Change CM (ts={ts})")
+                    log_data["Semantic Change CM (per-timestamp)"] = wandb.Image(fig_sc, caption=f"Semantic Change CM ts={ts}")
+                    plt.close(fig_sc)
+                    
                 wandb.log(log_data, step=ts) 
 
                 pbar.set_postfix({
@@ -182,6 +206,8 @@ def run_prequential_experiment(csv_path: str):
                 "recall": std_eval.recall(),
                 "f1": std_eval.f1_score(),
                 "kappa": std_eval.kappa(),
+                "kappa_m": std_eval.kappa_m(),
+                "kappa_t": std_eval.kappa_t(),
                 **change_eval.compute(),
             }
             results.append(final_metrics)
@@ -203,6 +229,7 @@ print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
 for file in tqdm(all_files, desc="Processing Embedding Files"):
     file_path = os.path.join(PROCESSED_DIR, file)
+#file_path = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings/embeddings_dino_sat493m.csv"
 
     res = run_prequential_experiment(file_path)
 
