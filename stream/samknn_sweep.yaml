@@ -1,0 +1,18 @@
+entity: chiaranguyenba-politecnico-di-milano
+program: stream/sweep.py
+project: capymoa-streaming
+method: grid
+name: samknn_gridsearch
+metric:
+  name: std_accuracy
+  goal: maximize
+
+parameters:
+  k:
+    values: [10,50,100]
+  limit:
+    values: [5000]
+  min_stm_size:
+    values: [20]
+  relative_ltm_size:
+    values: [0.3]

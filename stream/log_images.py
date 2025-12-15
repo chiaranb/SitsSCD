@@ -6,10 +6,8 @@ import pandas as pd
 import numpy as np
 from capymoa.instance import LabeledInstance
 from capymoa.stream import Schema
-from capymoa.base import SKClassifier
-from sklearn import linear_model
-
 import os
+import csv
 import matplotlib.pyplot as plt
 from metrics import StreamingChangeEvaluator, NUM_CLASSES, CLASS_NAMES
 from utils import plot_confusion_matrix_image
@@ -18,12 +16,15 @@ from utils import plot_confusion_matrix_image
 wandb.login()
 PROJECT_NAME = "capymoa-streaming"
 
-ADAPT_ON_STREAM = False
+ADAPT_ON_STREAM = True
+LOG_CONFUSION_MATRICES = True
+
 PROCESSED_DIR = "/Volumes/PSSD T7/SitsSCD/processed_embeddings/DINO/Proj_Scale"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
-DIFF_MONTHS = False 
+
+DIFF_MONTHS = False
 MONTHS_PER_YEAR = 12
 MONTHS_TRAIN = 6 if DIFF_MONTHS else None
 MONTHS_TEST = 18 if DIFF_MONTHS else None
@@ -31,8 +32,51 @@ RANDOM_SEED = 42
 
 # ---------------- Define models ----------------
 MODELS = {
-    "SAMKNN_k4": lambda schema: SAMkNN(schema=schema, random_seed=RANDOM_SEED, min_stm_size=20, relative_ltm_size=0.3, k=4),
+    "SAMKNN": lambda schema: SAMkNN(
+        schema=schema,
+        random_seed=RANDOM_SEED,
+        min_stm_size=20,
+        relative_ltm_size=0.3,
+        k = 4
+    )
 }
+
+# ---------------- CSV LOG FILES ----------------
+MISCLASS_FILE = "misclassified_log_test.csv"
+WRONG_BC_FILE = "wrong_bc_log_test.csv"
+WRONG_SC_FILE = "wrong_sc_log_test.csv"
+
+def init_csv_files():
+    """Create the CSV files if they do not already exist."""
+    if not os.path.exists(MISCLASS_FILE):
+        with open(MISCLASS_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "run_id", "timestamp",
+                "sits_id", "patch_id",
+                "y_true", "y_pred"
+            ])
+
+    if not os.path.exists(WRONG_BC_FILE):
+        with open(WRONG_BC_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "run_id", "timestamp",
+                "sits_id", "patch_id",
+                "y_true_t-1", "y_true_t",
+                "y_pred_t-1", "y_pred_t"
+            ])
+
+    if not os.path.exists(WRONG_SC_FILE):
+        with open(WRONG_SC_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "run_id", "timestamp",
+                "sits_id", "patch_id",
+                "y_true_t-1", "y_true_t",
+                "y_pred_t-1", "y_pred_t"
+            ])
+
 
 # ---------------- Helper: prequential loop ----------------
 def run_prequential_experiment(csv_path: str):
@@ -41,14 +85,18 @@ def run_prequential_experiment(csv_path: str):
     df = df.sort_values("timestamp").reset_index(drop=True)
     unique_ts = sorted(df["timestamp"].unique())
 
-    # Temporal split
+    # temporal split
     train_ts = unique_ts[:MONTHS_TRAIN] if MONTHS_TRAIN is not None else unique_ts[:MONTHS_PER_YEAR]
     stream_ts = unique_ts[MONTHS_TRAIN:MONTHS_TRAIN+MONTHS_TEST] if MONTHS_TEST is not None else unique_ts[MONTHS_PER_YEAR:]
 
     df_train = df[df["timestamp"].isin(train_ts)]
     df_stream = df[df["timestamp"].isin(stream_ts)]
 
-    feature_cols = [c for c in df.columns if c not in [PATCH_ID_COLUMN_NAME, LABEL_NAME, *OTHER_FEATURES]]
+    feature_cols = [
+        c for c in df.columns
+        if c not in [PATCH_ID_COLUMN_NAME, LABEL_NAME, *OTHER_FEATURES]
+    ]
+
     schema = Schema.from_custom(
         feature_names=feature_cols,
         target_attribute_name=LABEL_NAME,
@@ -56,6 +104,9 @@ def run_prequential_experiment(csv_path: str):
     )
 
     run_name_base = os.path.basename(csv_path).replace(".csv", "")
+
+    init_csv_files()
+
     results = []
 
     # Loop through each model
@@ -73,13 +124,14 @@ def run_prequential_experiment(csv_path: str):
             },
             reinit=True
         )
+        run_id = run.id
 
         try:
             model = model_class(schema)
             std_eval = ClassificationEvaluator(schema=schema, window_size=1000)
             change_eval = StreamingChangeEvaluator(num_classes=NUM_CLASSES)
 
-            # 1. Initial training (first 12 months)
+            ## 1. Initial training (first 12 months)
             print(f"\nInitial training for {model_name}...")
             for _, row in tqdm(df_train.iterrows(), total=len(df_train), desc=f"Initial Train ({model_name})", leave=False):
                 y_true = int(row[LABEL_NAME])
@@ -98,7 +150,6 @@ def run_prequential_experiment(csv_path: str):
 
                 print(f"\nTesting month {ts} ({len(df_month)} instances)")
 
-                # Lists for per-timestamp confusion matrices
                 y_true_list, y_pred_list = [], []
                 change_true_list, change_pred_list = [], []
                 sc_true_list, sc_pred_list = [], []
@@ -106,75 +157,71 @@ def run_prequential_experiment(csv_path: str):
                 misclassified, wrong_bc, wrong_sc = [], [], []
 
                 for _, row in df_month.iterrows():
-                    patch_id = row[PATCH_ID_COLUMN_NAME]
+                    patch = row[PATCH_ID_COLUMN_NAME]
                     sits_id = row["sits_id"]
                     timestamp = row["timestamp"]
+
                     y_true = int(row[LABEL_NAME])
                     X = np.array([row[c] for c in feature_cols], dtype=float)
                     instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
-
                     y_pred = int(model.predict(instance))
-                    
-                    # Update standard evaluator
-                    std_eval.update(y_true, y_pred)
 
-                    # Append values for the standard classification CM
+                    std_eval.update(y_true, y_pred)
+                    
                     y_true_list.append(y_true)
                     y_pred_list.append(y_pred)
-                    
+
+                    # Log misclassifications
                     if y_pred != y_true:
                         misclassified.append({
                             "sits_id": sits_id,
-                            "patch_id": patch_id,
+                            "patch_id": patch,
                             "timestamp": timestamp,
                             "y_true": y_true,
                             "y_pred": y_pred
                         })
 
-                    # 1. Get the previous state (t-1)
                     last_state = getattr(change_eval, "_last_state", {})
                     if row[PATCH_ID_COLUMN_NAME] in last_state:
                         y_prev, y_pred_prev = last_state[row[PATCH_ID_COLUMN_NAME]]
-                        
-                        # 2. Compare current (t) vs previous (t-1)
+
                         gt_change = 1 if y_true != y_prev else 0
                         pred_change = 1 if y_pred != y_pred_prev else 0
-                        
-                        # 3. Append to lists for plotting
+
                         change_true_list.append(gt_change)
                         change_pred_list.append(pred_change)
 
+                        # semantic change only for real change
                         if gt_change == 1:
                             sc_true_list.append(y_true)
                             sc_pred_list.append(y_pred)
-                        
+
+                        # binary change misprediction
                         if gt_change != pred_change:
                             wrong_bc.append({
                                 "sits_id": sits_id,
-                                "patch_id": patch_id,
+                                "patch_id": patch,
                                 "timestamp": timestamp,
                                 "y_true_t-1": y_prev,
                                 "y_true_t": y_true,
                                 "y_pred_t-1": y_pred_prev,
                                 "y_pred_t": y_pred
                             })
-                            
+
+                        # semantic change misclassification
                         if gt_change == 1 and y_pred != y_true:
                             wrong_sc.append({
                                 "sits_id": sits_id,
-                                "patch_id": patch_id,
+                                "patch_id": patch,
                                 "timestamp": timestamp,
                                 "y_true_t-1": y_prev,
                                 "y_true_t": y_true,
                                 "y_pred_t-1": y_pred_prev,
                                 "y_pred_t": y_pred
                             })
-                            
-                    
-                    # 4. Now, update the evaluator state with the current (t) values
+
                     change_eval.update(row[PATCH_ID_COLUMN_NAME], y_true, y_pred)
-
-
+                
                 if ADAPT_ON_STREAM:
                     print(f"Training on month {ts}...")
                     for _, row in df_month.iterrows():
@@ -183,41 +230,79 @@ def run_prequential_experiment(csv_path: str):
                         instance = LabeledInstance.from_array(schema, x=X, y_index=y_true)
                         model.train(instance)
                 
-                # Get cumulative metrics
-                metrics = change_eval.compute()
+
                 
-                log_data = {**metrics,
-                            "std_accuracy": std_eval.accuracy(),
-                            "std_precision": std_eval.precision(),
-                            "std_recall": std_eval.recall(),
-                            "std_f1": std_eval.f1_score(),
-                            "std_kappa": std_eval.kappa(),
-                            "std_kappa_m": std_eval.kappa_m(),
-                            "std_kappa_t": std_eval.kappa_t(),
-                           }
-            
+                with open(MISCLASS_FILE, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    for d in misclassified:
+                        writer.writerow([
+                            run_id, ts,
+                            d["sits_id"], d["patch_id"],
+                            d["y_true"], d["y_pred"]
+                        ])
 
-                # 1. Classification CM (per-timestamp)
-                if y_true_list:
-                    fig_cm = plot_confusion_matrix_image(y_true_list, y_pred_list, CLASS_NAMES, title=f"Confusion Matrix (ts={ts})")
-                    log_data["Classification CM (per-timestamp)"] = wandb.Image(fig_cm, caption=f"Classification CM ts={ts}")
-                    plt.close(fig_cm)
+                with open(WRONG_BC_FILE, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    for d in wrong_bc:
+                        writer.writerow([
+                            run_id, ts,
+                            d["sits_id"], d["patch_id"],
+                            d["y_true_t-1"], d["y_true_t"],
+                            d["y_pred_t-1"], d["y_pred_t"]
+                        ])
 
-                # 2. Binary Change CM (per-timestamp)
-                if change_true_list:
-                    fig_change = plot_confusion_matrix_image(change_true_list, change_pred_list, ["no_change", "change"], title=f"Change Confusion Matrix (ts={ts})")
-                    log_data["Change CM (per-timestamp)"] = wandb.Image(fig_change, caption=f"Change Confusion Matrix ts={ts}")
-                    plt.close(fig_change)
+                with open(WRONG_SC_FILE, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    for d in wrong_sc:
+                        writer.writerow([
+                            run_id, ts,
+                            d["sits_id"], d["patch_id"],
+                            d["y_true_t-1"], d["y_true_t"], d["y_pred_t-1"], d["y_pred_t"]
+                        ])
 
-                # 3. Semantic Change CM (per-timestamp)
-                if sc_true_list:
-                    fig_sc = plot_confusion_matrix_image(sc_true_list, sc_pred_list, CLASS_NAMES, title=f"Semantic Change CM (ts={ts})")
-                    log_data["Semantic Change CM (per-timestamp)"] = wandb.Image(fig_sc, caption=f"Semantic Change CM ts={ts}")
-                    plt.close(fig_sc)
+                metrics = change_eval.compute()
 
-                # Log all data for this step
+                log_data = {
+                    **metrics,
+                    "std_accuracy": std_eval.accuracy(),
+                    "std_precision": std_eval.precision(),
+                    "std_recall": std_eval.recall(),
+                    "std_f1": std_eval.f1_score(),
+                    "std_kappa": std_eval.kappa(),
+                    "std_kappa_m": std_eval.kappa_m(),
+                    "std_kappa_t": std_eval.kappa_t()
+                }
+
+                if LOG_CONFUSION_MATRICES:
+                    if y_true_list:
+                        fig_cm = plot_confusion_matrix_image(
+                            y_true_list, y_pred_list,
+                            CLASS_NAMES,
+                            title=f"Confusion Matrix (ts={ts})"
+                        )
+                        log_data["Classification CM (per-timestamp)"] = wandb.Image(fig_cm)
+                        plt.close(fig_cm)
+
+                    if change_true_list:
+                        fig_change = plot_confusion_matrix_image(
+                            change_true_list, change_pred_list,
+                            ["no_change", "change"],
+                            title=f"Change CM (ts={ts})"
+                        )
+                        log_data["Change CM (per-timestamp)"] = wandb.Image(fig_change)
+                        plt.close(fig_change)
+
+                    if sc_true_list:
+                        fig_sc = plot_confusion_matrix_image(
+                            sc_true_list, sc_pred_list,
+                            CLASS_NAMES,
+                            title=f"Semantic Change CM (ts={ts})"
+                        )
+                        log_data["Semantic Change CM (per-timestamp)"] = wandb.Image(fig_sc)
+                        plt.close(fig_sc)
+
                 wandb.log(log_data, step=ts)
-            
+
                 progress.set_postfix({
                     "acc": f"{std_eval.accuracy():.3f}",
                     "scs": f"{metrics.get('scs', 0.0):.3f}",
@@ -240,24 +325,39 @@ def run_prequential_experiment(csv_path: str):
             results.append(final_metrics)
 
         except Exception as e:
-            print(f"🚨 ERROR running model {model_name} on {run_name_base}: {e}")
+            print(f"ERROR running model {model_name} on {run_name_base}: {e}")
             print("Skipping to next model...")
 
         finally:
+            artifact = wandb.Artifact(
+                name="error_logs",
+                type="dataset",
+                description="Misclassified, wrong BC and wrong SC logs"
+            )
+
+            artifact.add_file(MISCLASS_FILE)
+            artifact.add_file(WRONG_BC_FILE)
+            artifact.add_file(WRONG_SC_FILE)
+
+            wandb.log_artifact(artifact)
             run.finish()
 
     return results
 
+
 # ---------------- Master loop over all embeddings ----------------
 all_results_in_memory = []
-all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv") and not file.startswith("._")]
+all_files = [
+    file for file in sorted(os.listdir(PROCESSED_DIR))
+    if file.endswith(".csv") and not file.startswith("._")
+]
 
 OUTPUT_CSV_FILE = "search_results_all_embeddings_preprocessing.csv"
 print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
 #for file in tqdm(all_files, desc="Processing Embedding Files"):
-#    file_path = os.path.join(PROCESSED_DIR, file)
-file_path = "/Volumes/PSSD T7/SitsSCD/processed_embeddings/DINO/Proj_Scale/PCA/emb_dino_sat493m_pca256_randomized_l2.csv"
+    #file_path = os.path.join(PROCESSED_DIR, file)
+file_path = "/Volumes/PSSD T7/SitsSCD/processed_embeddings/DINO/Proj_Scale/PCA/emb_dino_sat493m_pca256_randomized.csv"
 
 res = run_prequential_experiment(file_path)
 
@@ -278,11 +378,10 @@ print("Logging summary table to WandB...")
 
 if all_results_in_memory:
     df_all = pd.DataFrame(all_results_in_memory)
-
     wandb.init(project=PROJECT_NAME, name="all_embedding_summary", reinit=True)
     wandb.log({"all_embedding_results": wandb.Table(dataframe=df_all)})
     wandb.finish()
 else:
     print("No results were generated to log to WandB.")
 
-print("\n✅ All embedding evaluations completed.")
+print("\nCompleted.")

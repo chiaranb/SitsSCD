@@ -21,21 +21,27 @@ PROJECT_NAME = "capymoa-streaming"
 
 ADAPT_ON_STREAM = True  # True for prequential, False for test-only
 
-PROCESSED_DIR = "/Users/chiaranguyen/Desktop/SitsSCD/stream/embeddings"
+PROCESSED_DIR = "/Volumes/PSSD T7/SitsSCD/processed_embeddings/DINO/Proj_Scale/PCA"
 PATCH_ID_COLUMN_NAME = "patch_id"
 LABEL_NAME = "label"
 OTHER_FEATURES = ["sits_id", "timestamp"]
+DIFF_MONTHS = False 
 MONTHS_PER_YEAR = 12
+MONTHS_TRAIN = 6 if DIFF_MONTHS else None
+MONTHS_TEST = 18 if DIFF_MONTHS else None
 RANDOM_SEED = 42
 
 # ---------------- Define Pipeline Combinations ----------------
 
 PIPELINE_DEFINITIONS = {
-    "SGDClassifier_OneVsRest": lambda schema: SKClassifier(
+    "SGD_SVM": lambda schema: SKClassifier(
         schema=schema,
-        sklearner=multiclass.OneVsRestClassifier(
-            linear_model.SGDClassifier(random_state=RANDOM_SEED, loss="log_loss")
-        )),
+        sklearner=linear_model.SGDClassifier(random_state=RANDOM_SEED, loss="hinge"),
+    ),
+    "SGDClassifier": lambda schema: SKClassifier(
+        schema=schema,
+        sklearner=linear_model.SGDClassifier(random_state=RANDOM_SEED, loss="log_loss"),
+    )
 }
 
 
@@ -52,8 +58,10 @@ def run_prequential_experiment(csv_path: str):
     unique_ts = sorted(df["timestamp"].unique())
 
     # Split temporale
-    train_ts = unique_ts[:MONTHS_PER_YEAR]
-    stream_ts = unique_ts[MONTHS_PER_YEAR:]
+    train_ts = unique_ts[:MONTHS_TRAIN] if MONTHS_TRAIN is not None else unique_ts[:MONTHS_PER_YEAR]
+    stream_ts = unique_ts[MONTHS_TRAIN:MONTHS_TRAIN+MONTHS_TEST] if MONTHS_TEST is not None else unique_ts[MONTHS_PER_YEAR:]
+    print(f"Training on timestamps: {train_ts}")
+    print(f"Streaming on timestamps: {stream_ts}")
 
     df_train = df[df["timestamp"].isin(train_ts)]
     df_stream = df[df["timestamp"].isin(stream_ts)]
@@ -152,7 +160,8 @@ def run_prequential_experiment(csv_path: str):
 
                 pbar.set_postfix({
                     "acc": f"{std_eval.accuracy():.3f}",
-                    "miou": f"{metrics.get('miou', 0.0):.3f}"
+                    "miou": f"{metrics.get('miou', 0.0):.3f}",
+                    "scs": f"{metrics.get('scs', 0.0):.3f}"
                 })
 
             final_metrics = {
@@ -180,25 +189,26 @@ def run_prequential_experiment(csv_path: str):
 
 # ---------------- Master loop over all embeddings ----------------
 all_results_in_memory = []
-all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv")]
+all_files = [file for file in sorted(os.listdir(PROCESSED_DIR)) if file.endswith(".csv") and not file.startswith("._")]
 
-OUTPUT_CSV_FILE = "search_results_all_embeddings_new.csv"
+OUTPUT_CSV_FILE = "search_results_all_embeddings_preprocessing.csv"
 print(f"Saving incremental results to {OUTPUT_CSV_FILE}")
 
-for file in tqdm(all_files, desc="Processing Embedding Files"):
-    file_path = os.path.join(PROCESSED_DIR, file)
-    res = run_prequential_experiment(file_path)
+#for file in tqdm(all_files, desc="Processing Embedding Files"):
+#    file_path = os.path.join(PROCESSED_DIR, file)
+file_path = "/Volumes/PSSD T7/SitsSCD/processed_embeddings/DINO/Proj_Scale/PCA/emb_dino_sat493m_pca256_randomized.csv"
+res = run_prequential_experiment(file_path)
 
-    if res:
-        df_batch = pd.DataFrame(res)
-        write_header = not os.path.exists(OUTPUT_CSV_FILE)
-        df_batch.to_csv(
-            OUTPUT_CSV_FILE,
-            mode='a',
-            header=write_header,
-            index=False
-        )
-        all_results_in_memory.extend(res)
+if res:
+    df_batch = pd.DataFrame(res)
+    write_header = not os.path.exists(OUTPUT_CSV_FILE)
+    df_batch.to_csv(
+        OUTPUT_CSV_FILE,
+        mode='a',
+        header=write_header,
+        index=False
+    )
+    all_results_in_memory.extend(res)
 
 print(f"\nAll results saved incrementally to {OUTPUT_CSV_FILE}")
 print("Logging summary table to WandB...")
