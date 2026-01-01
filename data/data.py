@@ -136,7 +136,7 @@ class SitsDataset(Dataset):
             print(f"Loading {split} split without domain shift (same locations as train)")
         sits_ids.sort()
         num_sits = len(sits_ids)
-        gt = torch.zeros((num_sits, 24, 1024, 1024), dtype=torch.int8)
+        gt = torch.zeros((num_sits, 24, 224, 224), dtype=torch.int8)
         for sits in range(num_sits):
             gt[sits] = torch.tensor(np.load(join(self.gt_folder, f'{sits_ids[sits]}.npy')), dtype=torch.int8)
         end_time = time.time()
