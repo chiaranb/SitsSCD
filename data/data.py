@@ -285,8 +285,8 @@ class DynamicEarthNet(SitsDataset):
             domain_shift_type="none",
             num_channels=4,
             num_classes=7,
-            img_size=128,
-            true_size=1024,
+            img_size=16,
+            true_size=224,
             train_length=6,
             date_aug_range=2
     ):

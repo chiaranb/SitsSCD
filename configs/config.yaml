@@ -68,7 +68,7 @@ eval:
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   name: ${experiment_name}_${domain_shift_type}
-  project: sitsscd_v3
+  project: sitsscd_DINO
   log_model: True
   offline: False
   entity: chiaranguyenba-politecnico-di-milano
