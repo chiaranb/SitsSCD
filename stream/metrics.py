@@ -41,7 +41,7 @@ class StreamingChangeEvaluator:
 
         self._last_state[patch_id] = (y_true, y_pred)
 
-    def compute(self):
+    def compute(self, prefix=""):
         conf_mat = self.conf_matrix
         conf_mat_change = self.conf_matrix_change
         conf_mat_sc = self.conf_matrix_sc
@@ -79,25 +79,23 @@ class StreamingChangeEvaluator:
         iou_sc_denom = tp_sc + fp_sc + fn_sc
         iou_sc = tp_sc / (iou_sc_denom + 1e-8)
         
-        sc = np.nanmean(iou_sc[support_sc > 0]) * 100
-        if np.isnan(sc): 
-            sc = 0.0
+        valid = iou_sc[support_sc > 0]
+        sc = np.nanmean(valid) * 100 if len(valid) > 0 else 0.0
 
         scs = 0.5 * (bc + sc)
 
         output = {
-            "miou": miou,
-            "bc": bc,
-            "sc": sc,
-            "scs": scs,
+            f"{prefix}miou": miou,
+            f"{prefix}bc": bc,
+            f"{prefix}sc": sc,
+            f"{prefix}scs": scs,
         }
 
         # Per-class metrics
         for i, class_name in enumerate(CLASS_NAMES):
-            output[f"{class_name}"] = float(per_class_iou[i] * 100)
-            output[f"{class_name}_precision"] = float(precision[i] * 100)
-            output[f"{class_name}_recall"] = float(recall[i] * 100)
-            output[f"{class_name}_f1"] = float(f1[i] * 100)
-            output[f"{class_name}_support"] = int(support[i])
+            output[f"{prefix}{class_name}"] = float(per_class_iou[i] * 100)
+            output[f"{prefix}{class_name}_precision"] = float(precision[i] * 100)
+            output[f"{prefix}{class_name}_recall"] = float(recall[i] * 100)
+            output[f"{prefix}{class_name}_f1"] = float(f1[i] * 100)
 
         return output
